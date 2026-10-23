@@ -1,0 +1,14 @@
+{
+  "name": "Hermes Mobile",
+  "short_name": "Hermes",
+  "description": "Cliente móvil/tablet para tu servidor Hermes Agent",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#041c1c",
+  "theme_color": "#041c1c",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
