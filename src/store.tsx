@@ -10,7 +10,7 @@ import {
 } from "react";
 import { HermesClient, type Connection, type Session } from "@/lib/api";
 import { loadJSON, saveJSON } from "@/lib/utils";
-import { applyTheme, THEMES, type TextSize } from "@/themes/presets";
+import { applyTheme, findTheme, type TextSize } from "@/themes/presets";
 
 export type View = "chat" | "jobs" | "skills" | "server";
 
@@ -93,8 +93,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const client = useMemo(() => (connection ? new HermesClient(connection) : null), [connection]);
 
   useEffect(() => {
-    const theme = THEMES.find((t) => t.name === settings.theme) ?? THEMES[0];
-    applyTheme(theme, settings.textSize);
+    applyTheme(findTheme(settings.theme), settings.textSize);
   }, [settings.theme, settings.textSize]);
 
   const notify = useCallback((message: string, type: Toast["type"] = "success") => {

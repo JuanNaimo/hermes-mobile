@@ -46,9 +46,9 @@
   --color-muted: color-mix(in srgb, var(--midground-base) 8%, var(--background-base));
   --color-accent: color-mix(in srgb, var(--midground-base) 10%, var(--background-base));
   --color-muted-foreground: var(--color-text-secondary);
-  --color-destructive: #fb2c36;
-  --color-success: #4ade80;
-  --color-warning: #ffbd38;
+  --color-destructive: var(--destructive, #fb2c36);
+  --color-success: var(--success, #4ade80);
+  --color-warning: var(--warning, #ffbd38);
   --color-border: color-mix(in srgb, var(--midground-base) 15%, transparent);
 
   --radius-sm: calc(var(--theme-radius) - 4px);
@@ -94,11 +94,33 @@ button, [role="button"], a {
   user-select: none;
 }
 
+/* Light themes: status colours dark enough to read on a pale canvas, and
+   code blocks tinted with the accent instead of darkened. */
+:root[data-scheme="light"] {
+  --destructive: #d10a1a;
+  --success: #15803d;
+  --warning: #b45309;
+  --code-bg: color-mix(in srgb, var(--midground-base) 6%, var(--background-base));
+}
+
 /* Backdrop: subtle accent glow + grain, like the Nous lens overlays. */
 .hermes-backdrop {
   background:
     radial-gradient(120% 70% at 100% 0%, color-mix(in srgb, var(--theme-glow) 40%, transparent), transparent 60%),
     radial-gradient(90% 60% at 0% 100%, color-mix(in srgb, var(--theme-glow) 22%, transparent), transparent 65%);
+}
+/* Theme artwork (Nous Research): the engraving filler, multiplied into the
+   canvas and faded towards the reading column so text stays legible. */
+.hermes-backdrop::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: var(--theme-artwork, none) left top / cover no-repeat;
+  mix-blend-mode: multiply;
+  opacity: var(--theme-artwork-opacity, 0.2);
+  -webkit-mask-image: radial-gradient(120% 90% at 65% 55%, transparent 25%, #000 85%);
+  mask-image: radial-gradient(120% 90% at 65% 55%, transparent 25%, #000 85%);
 }
 .hermes-grain::after {
   content: '';
@@ -155,7 +177,7 @@ button, [role="button"], a {
   padding: 0.9em 1em;
   overflow-x: auto;
   border: 1px solid color-mix(in srgb, var(--midground-base) 15%, transparent);
-  background: color-mix(in srgb, #000 35%, var(--background-base));
+  background: var(--code-bg, color-mix(in srgb, #000 35%, var(--background-base)));
   border-radius: var(--radius-md);
 }
 .md table {

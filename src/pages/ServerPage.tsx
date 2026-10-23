@@ -117,7 +117,7 @@ export function ServerPage({ leading }: { leading?: ReactNode }) {
 
         <Panel className="flex flex-col gap-4 p-5 lg:col-span-2">
           <SectionLabel>Apariencia</SectionLabel>
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-8">
             {THEMES.map((t) => (
               <button
                 key={t.name}

@@ -1,3 +1,5 @@
+import nousArtwork from "@nous-research/ui/assets/filler-bg0.webp";
+
 /**
  * Dashboard palettes, mirrored from hermes-agent `web/src/themes/presets.ts`
  * so the mobile client looks like the dashboard. The Nous DS reads three
@@ -15,6 +17,10 @@ export interface MobileTheme {
   fontUrl?: string;
   radius: string;
   light?: boolean;
+  /** Full-bleed engraving behind the UI (the nousresearch.com "filler"). */
+  artwork?: string;
+  /** Shows the Nous mascot next to the Hermes wordmark. */
+  nousBrand?: boolean;
 }
 
 const SYSTEM_SANS =
@@ -29,6 +35,23 @@ export const THEMES: MobileTheme[] = [
     midground: "#ffe6cb",
     glow: "rgba(255, 189, 56, 0.35)",
     radius: "0.5rem",
+  },
+  {
+    // nousresearch.com: the DS "LENS_5I" lens (#170d02 / #FFAC02) seen through
+    // its white `difference` layer, i.e. Nous blue on cream, over the
+    // engraving filler, with Collapse + Courier Prime and square corners.
+    name: "nous",
+    label: "Nous Research",
+    background: "#E8F2FD",
+    midground: "#0053FD",
+    glow: "rgba(0, 66, 199, 0.22)",
+    fontSans: `"Collapse", ${SYSTEM_SANS}`,
+    fontMono: `"Courier Prime", ${SYSTEM_MONO}`,
+    fontUrl: "https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap",
+    radius: "0",
+    light: true,
+    artwork: nousArtwork,
+    nousBrand: true,
   },
   {
     name: "midnight",
@@ -124,6 +147,9 @@ export function applyTheme(theme: MobileTheme, textSize: TextSize) {
   set("--theme-radius", theme.radius);
   set("--radius", theme.radius);
   set("--theme-base-size", TEXT_SIZES[textSize]);
+  set("--theme-artwork", theme.artwork ? `url("${theme.artwork}")` : "none");
+  root.dataset.theme = theme.name;
+  root.dataset.scheme = theme.light ? "light" : "dark";
   root.style.colorScheme = theme.light ? "light" : "dark";
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme.background);
 
@@ -134,4 +160,8 @@ export function applyTheme(theme: MobileTheme, textSize: TextSize) {
     link.href = theme.fontUrl;
     document.head.appendChild(link);
   }
+}
+
+export function findTheme(name: string): MobileTheme {
+  return THEMES.find((t) => t.name === name) ?? THEMES[0];
 }

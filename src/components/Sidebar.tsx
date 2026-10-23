@@ -14,6 +14,7 @@ import { useApp, type View } from "@/store";
 import { busySessions, useRunsVersion } from "@/lib/runs";
 import { cn, relativeTime } from "@/lib/utils";
 import { IconButton, SectionLabel, StatusDot } from "./ui";
+import { Wordmark } from "./Brand";
 
 const NAV: { view: View; label: string; icon: typeof MessageSquare }[] = [
   { view: "chat", label: "Chat", icon: MessageSquare },
@@ -69,11 +70,7 @@ export function Sidebar({
     <div className="flex h-full min-h-0 flex-col">
       {/* Brand header — same lockup as the dashboard sidebar. */}
       <div className="flex h-16 shrink-0 items-center justify-between gap-2 border-b border-current/20 ps-4 pe-1">
-        <span className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase">
-          Hermes
-          <br />
-          Agent
-        </span>
+        <Wordmark className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase" />
         <div className="flex items-center">
           {onCollapse && (
             <IconButton label="Ocultar panel" onClick={onCollapse}>

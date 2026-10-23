@@ -4,6 +4,7 @@ import { Server, Trash2 } from "lucide-react";
 import { HermesClient, normalizeBaseUrl, type Connection } from "@/lib/api";
 import { useApp } from "@/store";
 import { IconButton, Panel, SectionLabel, TextField } from "@/components/ui";
+import { Wordmark } from "@/components/Brand";
 
 export function ConnectScreen() {
   const { connect, savedConnections, forgetConnection } = useApp();
@@ -43,14 +44,12 @@ export function ConnectScreen() {
   }
 
   return (
-    <div className="hermes-backdrop relative flex h-full w-full items-center justify-center overflow-y-auto px-4 pt-[calc(var(--safe-top)+1.5rem)] pb-[calc(var(--safe-bottom)+1.5rem)]">
+    <div className="hermes-backdrop [--theme-artwork-opacity:0.35] relative flex h-full w-full items-center justify-center overflow-y-auto px-4 pt-[calc(var(--safe-top)+1.5rem)] pb-[calc(var(--safe-bottom)+1.5rem)]">
       <div className="hermes-grain pointer-events-none fixed inset-0" aria-hidden />
       <div className="relative z-10 grid w-full max-w-4xl gap-8 md:grid-cols-[1fr_1.15fr] md:items-center">
         <div className="flex flex-col gap-4">
           <h1 className="font-mondwest text-display text-5xl leading-[0.9] tracking-[0.06em] text-midground md:text-6xl">
-            Hermes
-            <br />
-            Agent
+            <Wordmark className="gap-4" markClassName="h-24" />
           </h1>
           <p className="max-w-sm text-text-secondary">
             Conectate a tu servidor Hermes desde la tablet. Necesitás el API server del gateway habilitado

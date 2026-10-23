@@ -26,13 +26,30 @@ Collapse / Mondwest / Courier Prime), con un layout pensado para pantallas táct
   1600 px antes de enviarse.
 - **Jobs**: ver, crear, pausar, reanudar, ejecutar y borrar los cron jobs de Hermes.
 - **Skills y toolsets** disponibles en el servidor.
-- **Servidor**: estado (readiness), funciones, y ajustes de apariencia: los 7 temas del
-  dashboard, texto grande y comportamiento de Enter.
+- **Servidor**: estado (readiness), funciones, y ajustes de apariencia: los temas del
+  dashboard más el tema **Nous Research**, texto grande y comportamiento de Enter.
 - **Layout táctil**: en horizontal (≥ 1024 px) el panel lateral queda fijo y se puede
   ocultar. En vertical y en teléfonos pasa a ser un cajón. Todos los botones miden al
   menos 44 px y la app respeta las áreas seguras (notch y barra de inicio).
 - **PWA instalable**: incluye manifest y service worker, así que podés agregarla a la
   pantalla de inicio. También se puede empaquetar como app nativa con Capacitor.
+
+## Tema Nous Research
+
+Replica el look de nousresearch.com a partir del design system `@nous-research/ui`,
+que es el que arma ese sitio:
+
+- **Colores**: el lens `LENS_5I` del sitio (`#170d02` / `#FFAC02`) visto a través de su
+  capa `difference` blanca. El resultado es azul Nous `#0053FD` sobre crema `#E8F2FD`.
+- **Imagen**: el grabado clásico del sitio (`filler-bg0.webp`) de fondo a pantalla
+  completa, que se desvanece hacia la columna de lectura para que el texto se lea bien.
+- **Letras**: Collapse para el texto, Mondwest para los títulos y Courier Prime para el
+  código.
+- **Detalles**: la mascota de Nous junto al logo de Hermes, esquinas rectas y grano.
+
+Se elige en **Servidor → Apariencia**.
+
+![Tema Nous Research](docs/screenshots/theme-nous.png)
 
 ## 1. Preparar el servidor Hermes
 
