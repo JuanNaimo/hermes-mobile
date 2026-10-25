@@ -14,17 +14,19 @@ export function SkillsPage({ leading }: { leading?: ReactNode }) {
   const [tab, setTab] = useState<Tab>("skills");
   const [skills, setSkills] = useState<Skill[] | null>(null);
   const [toolsets, setToolsets] = useState<Toolset[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [errors, setErrors] = useState<Partial<Record<Tab, string>>>({});
   const [query, setQuery] = useState("");
 
+  // Loaded independently: a broken skills listing on the server must not hide the toolsets.
   useEffect(() => {
-    Promise.all([client.skills(), client.toolsets()])
-      .then(([s, t]) => {
-        setSkills(s);
-        setToolsets(t);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    const fail = (key: Tab) => (err: unknown) =>
+      setErrors((prev) => ({ ...prev, [key]: err instanceof Error ? err.message : String(err) }));
+    client.skills().then(setSkills, fail("skills"));
+    client.toolsets().then(setToolsets, fail("toolsets"));
   }, [client]);
+
+  const error = errors[tab];
+  const loaded = tab === "skills" ? skills : toolsets;
 
   const q = query.trim().toLowerCase();
   const groupedSkills = useMemo(() => {
@@ -73,8 +75,12 @@ export function SkillsPage({ leading }: { leading?: ReactNode }) {
         </label>
       </div>
 
-      {error && <p className="border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</p>}
-      {!error && (!skills || !toolsets) && (
+      {error && (
+        <p className="border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+          {tab === "skills" ? `El servidor no pudo listar las skills: ${error}` : error}
+        </p>
+      )}
+      {!error && !loaded && (
         <div className="flex justify-center py-12 text-text-secondary">
           <Spinner />
         </div>

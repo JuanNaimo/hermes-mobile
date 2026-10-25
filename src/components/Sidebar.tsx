@@ -2,14 +2,18 @@ import { useMemo, useState } from "react";
 import { Spinner } from "@/components/ds";
 import {
   CalendarClock,
+  Check,
+  ChevronsUpDown,
   MessageSquare,
   PanelLeftClose,
   Plus,
   Puzzle,
   Search,
   Server,
+  UserPlus,
   X,
 } from "lucide-react";
+import type { Connection } from "@/lib/api";
 import { useApp, type View } from "@/store";
 import { busySessions, useRunsVersion } from "@/lib/runs";
 import { cn, relativeTime } from "@/lib/utils";
@@ -42,11 +46,15 @@ export function Sidebar({
     view,
     setView,
     connection,
+    savedConnections,
+    connect,
+    disconnect,
     refreshSessions,
   } = useApp();
   useRunsVersion();
   const running = new Set(busySessions());
   const [query, setQuery] = useState("");
+  const [switcherOpen, setSwitcherOpen] = useState(false);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -182,16 +190,90 @@ export function Sidebar({
         )}
       </div>
 
-      <div className="flex shrink-0 items-center gap-2.5 border-t border-current/20 px-4 py-3 pb-[calc(var(--safe-bottom)+0.75rem)]">
-        <StatusDot tone={sessionsError ? "error" : "ok"} />
-        <div className="min-w-0">
-          <div className="truncate text-sm text-midground">{connection?.label || "Hermes"}</div>
-          <div className="truncate font-mono text-xs text-text-tertiary">
-            {connection?.baseUrl}
-            {connection?.profile ? ` · ${connection.profile}` : ""}
-          </div>
-        </div>
+      <div className="shrink-0 border-t border-current/20 pb-[var(--safe-bottom)]">
+        {switcherOpen && connection && (
+          <ProfileSwitcher
+            current={connection}
+            saved={savedConnections}
+            onPick={(c) => {
+              setSwitcherOpen(false);
+              connect(c);
+              setView("chat");
+              onNavigate();
+            }}
+            onAdd={disconnect}
+          />
+        )}
+        <button
+          type="button"
+          aria-expanded={switcherOpen}
+          onClick={() => setSwitcherOpen((o) => !o)}
+          className="flex min-h-14 w-full items-center gap-2.5 px-4 py-3 text-start hover:bg-midground/5"
+        >
+          <StatusDot tone={sessionsError ? "error" : "ok"} />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm text-midground">
+              {connection?.label || "Hermes"}
+              {connection?.profile ? ` · ${connection.profile}` : ""}
+            </span>
+            <span className="block truncate font-mono text-xs text-text-tertiary">{connection?.baseUrl}</span>
+          </span>
+          <ChevronsUpDown className="size-4 shrink-0 text-text-tertiary" aria-label="Cambiar perfil" />
+        </button>
       </div>
+    </div>
+  );
+}
+
+/** Saved connections to the current server, one per profile (each profile has its own API key). */
+function ProfileSwitcher({
+  current,
+  saved,
+  onPick,
+  onAdd,
+}: {
+  current: Connection;
+  saved: Connection[];
+  onPick: (c: Connection) => void;
+  onAdd: () => void;
+}) {
+  const isCurrent = (c: Connection) => c.baseUrl === current.baseUrl && (c.profile ?? "") === (current.profile ?? "");
+  const sameServer = saved.filter((c) => c.baseUrl === current.baseUrl);
+  const others = saved.filter((c) => c.baseUrl !== current.baseUrl);
+  const row = (c: Connection) => (
+    <li key={`${c.baseUrl}|${c.profile ?? ""}`}>
+      <button
+        type="button"
+        onClick={() => !isCurrent(c) && onPick(c)}
+        className="flex min-h-12 w-full items-center gap-3 px-5 text-start text-sm text-text-secondary hover:bg-midground/5 hover:text-midground"
+      >
+        <span className="min-w-0 flex-1 truncate">
+          {c.profile || "default"}
+          {c.baseUrl !== current.baseUrl && (
+            <span className="ms-2 font-mono text-xs text-text-tertiary">{c.label || c.baseUrl}</span>
+          )}
+        </span>
+        {isCurrent(c) && <Check className="size-4 shrink-0 text-midground" />}
+      </button>
+    </li>
+  );
+  return (
+    <div className="border-b border-current/10 py-1.5">
+      <SectionLabel className="block px-5 pt-1 pb-1">Perfiles</SectionLabel>
+      <ul>{sameServer.map(row)}</ul>
+      {others.length > 0 && (
+        <>
+          <SectionLabel className="block px-5 pt-2 pb-1">Otros servidores</SectionLabel>
+          <ul>{others.map(row)}</ul>
+        </>
+      )}
+      <button
+        type="button"
+        onClick={onAdd}
+        className="flex min-h-12 w-full items-center gap-3 px-5 text-start text-sm text-text-secondary hover:bg-midground/5 hover:text-midground"
+      >
+        <UserPlus className="size-4 shrink-0" /> Agregar perfil
+      </button>
     </div>
   );
 }

@@ -103,6 +103,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const connect = useCallback((conn: Connection) => {
+    // Session ids belong to one profile: switching must not reopen the old one.
+    if (!connection || !sameConn(connection, conn)) {
+      setSessions([]);
+      setActiveSessionIdState(null);
+      saveJSON(ACTIVE_KEY, null);
+    }
     setConnection(conn);
     saveJSON(CONN_KEY, conn);
     setSaved((prev) => {
@@ -110,7 +116,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       saveJSON(SAVED_KEY, next);
       return next;
     });
-  }, []);
+  }, [connection]);
 
   const disconnect = useCallback(() => {
     setConnection(null);

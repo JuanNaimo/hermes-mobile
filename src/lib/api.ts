@@ -164,6 +164,15 @@ function networkError(err: unknown, conn: Connection): Error {
   );
 }
 
+/** Single-session responses come wrapped: `{ object: "hermes.session", session: {...} }`. */
+type SessionEnvelope = Session | { object?: string; session: Session };
+
+function unwrapSession(res: SessionEnvelope): Session {
+  const session = "session" in res ? res.session : res;
+  if (!session?.id) throw new ApiError("El servidor devolvió una sesión sin id", 0, "invalid_session");
+  return session;
+}
+
 export class HermesClient {
   readonly conn: Connection;
 
@@ -229,33 +238,39 @@ export class HermesClient {
     );
   }
 
-  createSession(title?: string) {
-    return this.request<Session>("/api/sessions", {
-      method: "POST",
-      body: JSON.stringify(title ? { title } : {}),
-    });
+  async createSession(title?: string): Promise<Session> {
+    return unwrapSession(
+      await this.request<SessionEnvelope>("/api/sessions", {
+        method: "POST",
+        body: JSON.stringify(title ? { title } : {}),
+      }),
+    );
   }
 
-  getSession(id: string) {
-    return this.request<Session>(`/api/sessions/${encodeURIComponent(id)}`);
+  async getSession(id: string): Promise<Session> {
+    return unwrapSession(await this.request<SessionEnvelope>(`/api/sessions/${encodeURIComponent(id)}`));
   }
 
-  renameSession(id: string, title: string) {
-    return this.request<Session>(`/api/sessions/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ title }),
-    });
+  async renameSession(id: string, title: string): Promise<Session> {
+    return unwrapSession(
+      await this.request<SessionEnvelope>(`/api/sessions/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title }),
+      }),
+    );
   }
 
   deleteSession(id: string) {
     return this.request<unknown>(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
   }
 
-  forkSession(id: string, title?: string) {
-    return this.request<Session>(`/api/sessions/${encodeURIComponent(id)}/fork`, {
-      method: "POST",
-      body: JSON.stringify(title ? { title } : {}),
-    });
+  async forkSession(id: string, title?: string): Promise<Session> {
+    return unwrapSession(
+      await this.request<SessionEnvelope>(`/api/sessions/${encodeURIComponent(id)}/fork`, {
+        method: "POST",
+        body: JSON.stringify(title ? { title } : {}),
+      }),
+    );
   }
 
   async messages(id: string): Promise<Message[]> {

@@ -144,14 +144,14 @@ const server = http.createServer(async (req, res) => {
   }
   if (path === "/api/sessions" && req.method === "POST") {
     const id = addSession(body.title ?? null);
-    return send(res, 201, sessions.get(id));
+    return send(res, 201, { object: "hermes.session", session: sessions.get(id) });
   }
   if ((m = path.match(/^\/api\/sessions\/([^/]+)$/))) {
     const s = sessions.get(decodeURIComponent(m[1]));
     if (!s) return send(res, 404, { error: { message: "Session not found", code: "session_not_found" } });
     if (req.method === "DELETE") { sessions.delete(s.id); return send(res, 200, { deleted: true }); }
-    if (req.method === "PATCH") { if (body.title) s.title = body.title; return send(res, 200, s); }
-    return send(res, 200, s);
+    if (req.method === "PATCH") { if (body.title) s.title = body.title; return send(res, 200, { object: "hermes.session", session: s }); }
+    return send(res, 200, { object: "hermes.session", session: s });
   }
   if ((m = path.match(/^\/api\/sessions\/([^/]+)\/messages$/))) {
     const id = decodeURIComponent(m[1]);
@@ -160,7 +160,7 @@ const server = http.createServer(async (req, res) => {
   if ((m = path.match(/^\/api\/sessions\/([^/]+)\/fork$/))) {
     const src = sessions.get(decodeURIComponent(m[1]));
     const id = addSession(body.title ?? `${src.title} (fork)`, structuredClone(messages.get(src.id)));
-    return send(res, 201, sessions.get(id));
+    return send(res, 201, { object: "hermes.session", session: sessions.get(id) });
   }
   if ((m = path.match(/^\/api\/sessions\/([^/]+)\/chat\/stream$/))) return streamTurn(req, res, decodeURIComponent(m[1]), body);
   if ((m = path.match(/^\/v1\/runs\/([^/]+)\/approval$/))) { approvals.get(m[1])?.(body.choice); return send(res, 200, { object: "hermes.run.approval_response", choice: body.choice }); }
