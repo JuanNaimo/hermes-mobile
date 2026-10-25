@@ -51,10 +51,41 @@ Se elige en **Servidor → Apariencia**.
 
 ![Tema Nous Research](docs/screenshots/theme-nous.png)
 
-## 1. Preparar el servidor Hermes
+## Dos formas de conectarse
 
-La app habla con el **API server** del gateway (no con el dashboard de `:9119`). En la
-máquina donde corre Hermes, en `~/.hermes/.env`:
+- **Usuario (dashboard, `:9119`)**: un solo login con usuario y contraseña que ve **todos
+  los perfiles**, como la app de escritorio. Por ahora muestra perfiles, sesiones e
+  historial (solo lectura); escribir, jobs y skills llegan en los próximos pasos de
+  [`docs/dashboard-migration.md`](docs/dashboard-migration.md).
+- **API key (API server, `:8642`)**: el modo original, completo, con una
+  `API_SERVER_KEY` por perfil.
+
+### Modo usuario (dashboard)
+
+El login necesita conservar una cookie entre dos pedidos, cosa que un `fetch` a otro
+origen no puede hacer. Por eso:
+
+- **En la app (APK)** usa `CapacitorHttp`, el HTTP nativo del sistema: sin CORS, y la
+  cookie se reenvía a mano.
+- **En el navegador** pasa por el proxy de `pnpm dev`, que hace al dashboard
+  same-origin bajo `/hermes-dashboard`. Elegís el server al arrancar:
+
+  ```bash
+  HERMES_DASHBOARD=http://192.168.0.107:9119 pnpm dev
+  ```
+
+  Un build estático (`pnpm build` servido desde un hosting) no tiene proxy: ahí usá el
+  modo API key.
+
+En el server, fijá el secreto del login para que reiniciar Hermes no invalide las
+sesiones abiertas: `HERMES_DASHBOARD_BASIC_AUTH_SECRET` (o `dashboard.basic_auth.secret`).
+Los tokens duran 12 h y se renuevan solos durante 30 días; después la app pide la
+contraseña de nuevo (nunca la guarda).
+
+## 1. Preparar el servidor Hermes (modo API key)
+
+Este modo habla con el **API server** del gateway. En la máquina donde corre Hermes, en
+`~/.hermes/.env`:
 
 ```bash
 API_SERVER_ENABLED=true
@@ -118,14 +149,23 @@ puede hablar con un gateway HTTP en tu LAN. En iOS, si tu gateway no tiene TLS, 
 
 ## Desarrollo sin servidor real
 
-`scripts/mock-server.mjs` imita la parte del API server que usa la app: sesiones,
-streaming con razonamiento, herramientas y una aprobación (pedile que "borre" algo),
-además de jobs y skills.
+Hay un mock para cada modo:
+
+- `scripts/mock-server.mjs` imita el API server: sesiones, streaming con razonamiento,
+  herramientas y una aprobación (pedile que "borre" algo), además de jobs y skills.
+- `scripts/mock-dashboard.mjs` imita el dashboard: el login nativo con PKCE (cookie,
+  código de un solo uso que vence a los 120 s, verificación S256), el refresh de tokens,
+  los perfiles `default` y `tech-insider`, sus sesiones y el historial. También aplica el
+  chequeo de `Host` y el CORS solo-localhost del server real.
 
 ```bash
-pnpm mock          # http://0.0.0.0:8642, API key: dev
-pnpm dev
+pnpm mock              # API server en :8642, API key: dev
+pnpm mock:dashboard    # dashboard en :9119, usuario hermes / contraseña hermes
+pnpm dev               # el proxy apunta a :9119 por defecto
 ```
+
+`ACCESS_TTL=60 pnpm mock:dashboard` hace que los tokens venzan en un minuto, para ver el
+refresh automático.
 
 ## Estructura
 
@@ -133,6 +173,10 @@ pnpm dev
 src/
 ├── lib/
 │   ├── api.ts          # cliente tipado del API server (sesiones, SSE, runs, jobs)
+│   ├── dashboard.ts    # login PKCE del dashboard, refresh, perfiles, sesiones, historial
+│   ├── http.ts         # CapacitorHttp en la app nativa, fetch en el navegador
+│   ├── sha256.ts       # SHA-256 para PKCE donde no hay WebCrypto (http:// en la LAN)
+│   ├── connection.ts   # las dos clases de conexión guardada (API key / usuario)
 │   ├── sse.ts          # parser SSE incremental (el stream es un POST, sin EventSource)
 │   ├── transcript.ts   # historial + eventos SSE → items del chat (reducer puro)
 │   └── runs.ts         # turnos en curso fuera de React (no se cortan al navegar)
@@ -143,6 +187,6 @@ src/
 ```
 
 ```bash
-pnpm test          # tests del parser SSE y del reducer del chat
+pnpm test          # parser SSE, reducer del chat y login del dashboard contra el mock
 pnpm typecheck
 ```

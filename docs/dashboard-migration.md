@@ -13,7 +13,8 @@ server real desde la PC del usuario.
 
 ## Plan
 
-1. Login + lista de perfiles + sesiones (REST). Probar contra el server real.
+1. ✅ Login + lista de perfiles + sesiones (REST). **Hecho contra el mock**
+   (`scripts/mock-dashboard.mjs`); falta probarlo contra el server real.
 2. Chat por WebSocket JSON-RPC (reemplaza el SSE de `/api/sessions/{id}/chat/stream`).
 3. Aprobaciones, stop, skills y jobs vía dashboard.
 4. Mantener el modo API key actual como alternativa en la pantalla de conexión
@@ -109,5 +110,20 @@ proveedores de inferencia, no del dashboard.)
    Android y dev; iOS (`capacitor://localhost`) o un hosting en la LAN necesitarían
    parchear Hermes.
 4. Si el chat embebido del dashboard está deshabilitado, `/api/ws` cierra con 4403.
+
+## Estado del paso 1
+
+- Código: `src/lib/dashboard.ts` (login nativo PKCE, refresh con margen de 2 min y un
+  solo refresh concurrente, reintento ante 401), `src/lib/http.ts` (CapacitorHttp con
+  `disableRedirects` y cookie de PKCE reenviada a mano; `fetch` same-origin vía proxy en
+  el navegador), proxy `/hermes-dashboard` en `vite.config.ts` (reescribe `Host`, saca
+  `Origin` y `Referer`).
+- Verificado contra el mock: login, contraseña incorrecta, refresh antes del
+  vencimiento, refresh revocado → vuelve al login con el usuario precargado, perfiles,
+  sesiones de todos los perfiles y filtradas, historial. También desde un origen
+  `http://<ip-lan>:5180` sin WebCrypto (usa el SHA-256 en JS).
+- **Sin probar**: el camino nativo (CapacitorHttp en un APK) y el server real.
+  Para el server real desde la PC: `HERMES_DASHBOARD=http://192.168.0.107:9119 pnpm dev`.
+- En modo dashboard el chat queda en solo lectura; Jobs y Skills se ocultan.
 
 Nada de esto fue probado todavía con un token real.

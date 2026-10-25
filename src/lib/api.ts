@@ -9,6 +9,8 @@ import { SseParser } from "./sse.ts";
  */
 
 export interface Connection {
+  /** Absent on connections saved before dashboard mode existed. */
+  mode?: "apikey";
   /** e.g. `http://192.168.1.20:8642` — no trailing slash, no `/v1`. */
   baseUrl: string;
   apiKey: string;
@@ -35,6 +37,8 @@ export interface Session {
   pinned?: boolean;
   archived?: boolean;
   parent_session_id?: string | null;
+  /** Owning profile; set by the dashboard's cross-profile listing. */
+  profile?: string;
 }
 
 export type ContentPart =

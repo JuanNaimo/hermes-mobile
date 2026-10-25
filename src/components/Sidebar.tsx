@@ -13,18 +13,19 @@ import {
   UserPlus,
   X,
 } from "lucide-react";
-import type { Connection } from "@/lib/api";
+import { connectionKey, isDashboard, type AnyConnection } from "@/lib/connection";
 import { useApp, type View } from "@/store";
 import { busySessions, useRunsVersion } from "@/lib/runs";
 import { cn, relativeTime } from "@/lib/utils";
 import { IconButton, SectionLabel, StatusDot } from "./ui";
 import { Wordmark } from "./Brand";
 
-const NAV: { view: View; label: string; icon: typeof MessageSquare }[] = [
-  { view: "chat", label: "Chat", icon: MessageSquare },
-  { view: "jobs", label: "Jobs", icon: CalendarClock },
-  { view: "skills", label: "Skills", icon: Puzzle },
-  { view: "server", label: "Servidor", icon: Server },
+const NAV: { view: View; label: string; icon: typeof MessageSquare; dashboard: boolean }[] = [
+  { view: "chat", label: "Chat", icon: MessageSquare, dashboard: true },
+  // Dashboard mode gets jobs and skills in a later step of the migration.
+  { view: "jobs", label: "Jobs", icon: CalendarClock, dashboard: false },
+  { view: "skills", label: "Skills", icon: Puzzle, dashboard: false },
+  { view: "server", label: "Servidor", icon: Server, dashboard: true },
 ];
 
 export function Sidebar({
@@ -50,7 +51,12 @@ export function Sidebar({
     connect,
     disconnect,
     refreshSessions,
+    profiles,
+    profileFilter,
+    setProfileFilter,
   } = useApp();
+  const dashboardMode = isDashboard(connection);
+  const nav = NAV.filter((n) => !dashboardMode || n.dashboard);
   useRunsVersion();
   const running = new Set(busySessions());
   const [query, setQuery] = useState("");
@@ -66,6 +72,8 @@ export function Sidebar({
   }, [sessions, query]);
 
   const pinned = filtered.filter((s) => s.pinned);
+  // Across profiles, say whose session each row is.
+  const showProfile = dashboardMode && profileFilter === "all";
   const rest = filtered.filter((s) => !s.pinned);
 
   function open(id: string | null) {
@@ -94,8 +102,8 @@ export function Sidebar({
       </div>
 
       <nav aria-label="Navegación" className="shrink-0 border-b border-current/10 py-1.5">
-        <ul className="grid grid-cols-4">
-          {NAV.map(({ view: v, label, icon: Icon }) => {
+        <ul className={cn("grid", nav.length === 4 ? "grid-cols-4" : "grid-cols-2")}>
+          {nav.map(({ view: v, label, icon: Icon }) => {
             const active = view === v;
             return (
               <li key={v}>
@@ -122,17 +130,20 @@ export function Sidebar({
       </nav>
 
       <div className="flex shrink-0 flex-col gap-2 px-3 pt-3 pb-2">
-        <button
-          type="button"
-          onClick={() => open(null)}
-          className={cn(
-            "flex h-12 items-center justify-center gap-2 rounded-[var(--radius-sm)]",
-            "bg-midground text-background-base font-bold text-display text-xs tracking-[0.2em]",
-            "shadow-[inset_-1px_-1px_0_0_#00000080,inset_1px_1px_0_0_#ffffff80] active:invert",
-          )}
-        >
-          <Plus className="size-4" /> Nueva conversación
-        </button>
+        {/* New chats need the dashboard's WebSocket (next migration step). */}
+        {!dashboardMode && (
+          <button
+            type="button"
+            onClick={() => open(null)}
+            className={cn(
+              "flex h-12 items-center justify-center gap-2 rounded-[var(--radius-sm)]",
+              "bg-midground text-background-base font-bold text-display text-xs tracking-[0.2em]",
+              "shadow-[inset_-1px_-1px_0_0_#00000080,inset_1px_1px_0_0_#ffffff80] active:invert",
+            )}
+          >
+            <Plus className="size-4" /> Nueva conversación
+          </button>
+        )}
         <label className="flex h-11 items-center gap-2 border border-current/15 bg-background/40 px-3 rounded-[var(--radius-sm)] focus-within:border-midground/40">
           <Search className="size-4 shrink-0 text-text-tertiary" />
           <input
@@ -143,6 +154,9 @@ export function Sidebar({
             className="min-w-0 flex-1 bg-transparent text-base text-midground placeholder:text-text-disabled focus:outline-none"
           />
         </label>
+        {dashboardMode && profiles.length > 0 && (
+          <ProfileChips profiles={profiles.map((p) => p.name)} value={profileFilter} onChange={setProfileFilter} />
+        )}
       </div>
 
       <div className="scroll-area min-h-0 flex-1 pb-2">
@@ -162,9 +176,9 @@ export function Sidebar({
         {pinned.length > 0 && <Group label="Fijadas" />}
         {pinned.map((s) => (
           <SessionRow
-            key={s.id}
+            key={`${s.profile ?? ""}/${s.id}`}
             title={s.title || s.preview || s.id}
-            meta={relativeTime(s.last_active ?? s.started_at)}
+            meta={[relativeTime(s.last_active ?? s.started_at), showProfile ? s.profile : ""].filter(Boolean).join(" · ")}
             active={view === "chat" && s.id === activeSessionId}
             running={running.has(s.id)}
             onClick={() => open(s.id)}
@@ -173,9 +187,13 @@ export function Sidebar({
         {rest.length > 0 && <Group label="Recientes" />}
         {rest.map((s) => (
           <SessionRow
-            key={s.id}
+            key={`${s.profile ?? ""}/${s.id}`}
             title={s.title || s.preview || s.id}
-            meta={[relativeTime(s.last_active ?? s.started_at), s.source && s.source !== "api_server" ? s.source : ""]
+            meta={[
+              relativeTime(s.last_active ?? s.started_at),
+              showProfile ? s.profile : "",
+              s.source && s.source !== "api_server" ? s.source : "",
+            ]
               .filter(Boolean)
               .join(" · ")}
             active={view === "chat" && s.id === activeSessionId}
@@ -213,42 +231,82 @@ export function Sidebar({
           <StatusDot tone={sessionsError ? "error" : "ok"} />
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm text-midground">
-              {connection?.label || "Hermes"}
-              {connection?.profile ? ` · ${connection.profile}` : ""}
+              {connection && connectionTitle(connection)}
             </span>
             <span className="block truncate font-mono text-xs text-text-tertiary">{connection?.baseUrl}</span>
           </span>
-          <ChevronsUpDown className="size-4 shrink-0 text-text-tertiary" aria-label="Cambiar perfil" />
+          <ChevronsUpDown className="size-4 shrink-0 text-text-tertiary" aria-label="Cambiar conexión" />
         </button>
       </div>
     </div>
   );
 }
 
-/** Saved connections to the current server, one per profile (each profile has its own API key). */
+function connectionTitle(c: AnyConnection): string {
+  if (isDashboard(c)) return `${c.username} · ${c.label || "dashboard"}`;
+  return `${c.label || "Hermes"}${c.profile ? ` · ${c.profile}` : ""}`;
+}
+
+/** Profile filter for the dashboard's cross-profile session list. */
+function ProfileChips({
+  profiles,
+  value,
+  onChange,
+}: {
+  profiles: string[];
+  value: string;
+  onChange: (p: string) => void;
+}) {
+  return (
+    <div role="radiogroup" aria-label="Perfil" className="-mx-3 flex gap-1.5 overflow-x-auto px-3 scrollbar-none">
+      {["all", ...profiles].map((p) => (
+        <button
+          key={p}
+          type="button"
+          role="radio"
+          aria-checked={value === p}
+          onClick={() => onChange(p)}
+          className={cn(
+            "h-9 shrink-0 border px-3 text-sm transition-colors rounded-[var(--radius-sm)]",
+            value === p
+              ? "border-midground bg-midground text-background-base"
+              : "border-current/20 text-text-secondary hover:text-midground",
+          )}
+        >
+          {p === "all" ? "Todos" : p}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Saved connections. In API-key mode each profile is its own connection (one
+ * key per profile); a dashboard login covers every profile on its server.
+ */
 function ProfileSwitcher({
   current,
   saved,
   onPick,
   onAdd,
 }: {
-  current: Connection;
-  saved: Connection[];
-  onPick: (c: Connection) => void;
+  current: AnyConnection;
+  saved: AnyConnection[];
+  onPick: (c: AnyConnection) => void;
   onAdd: () => void;
 }) {
-  const isCurrent = (c: Connection) => c.baseUrl === current.baseUrl && (c.profile ?? "") === (current.profile ?? "");
+  const isCurrent = (c: AnyConnection) => connectionKey(c) === connectionKey(current);
   const sameServer = saved.filter((c) => c.baseUrl === current.baseUrl);
   const others = saved.filter((c) => c.baseUrl !== current.baseUrl);
-  const row = (c: Connection) => (
-    <li key={`${c.baseUrl}|${c.profile ?? ""}`}>
+  const row = (c: AnyConnection) => (
+    <li key={connectionKey(c)}>
       <button
         type="button"
         onClick={() => !isCurrent(c) && onPick(c)}
         className="flex min-h-12 w-full items-center gap-3 px-5 text-start text-sm text-text-secondary hover:bg-midground/5 hover:text-midground"
       >
         <span className="min-w-0 flex-1 truncate">
-          {c.profile || "default"}
+          {isDashboard(c) ? `${c.username} · todos los perfiles` : c.profile || "default"}
           {c.baseUrl !== current.baseUrl && (
             <span className="ms-2 font-mono text-xs text-text-tertiary">{c.label || c.baseUrl}</span>
           )}
@@ -259,7 +317,7 @@ function ProfileSwitcher({
   );
   return (
     <div className="border-b border-current/10 py-1.5">
-      <SectionLabel className="block px-5 pt-1 pb-1">Perfiles</SectionLabel>
+      <SectionLabel className="block px-5 pt-1 pb-1">Conexiones</SectionLabel>
       <ul>{sameServer.map(row)}</ul>
       {others.length > 0 && (
         <>
@@ -272,7 +330,7 @@ function ProfileSwitcher({
         onClick={onAdd}
         className="flex min-h-12 w-full items-center gap-3 px-5 text-start text-sm text-text-secondary hover:bg-midground/5 hover:text-midground"
       >
-        <UserPlus className="size-4 shrink-0" /> Agregar perfil
+        <UserPlus className="size-4 shrink-0" /> Agregar conexión
       </button>
     </div>
   );

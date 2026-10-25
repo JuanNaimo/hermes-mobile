@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Spinner } from "@/components/ds";
-import { ArrowDown, GitBranch, Pencil, RefreshCw, Sparkles, Trash2 } from "lucide-react";
-import { useApp, useClient } from "@/store";
+import { ArrowDown, GitBranch, History, Pencil, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { useApp } from "@/store";
 import { ApiError } from "@/lib/api";
 import { historyToItems, type ChatItem } from "@/lib/transcript";
 import { answerApproval, clearRun, getRun, startRun, stopRun, useRunsVersion } from "@/lib/runs";
@@ -17,17 +17,23 @@ const SUGGESTIONS = [
 ];
 
 export function ChatView({ leading }: { leading?: ReactNode }) {
-  const client = useClient();
   const {
+    client,
+    loadMessages,
     activeSessionId,
     setActiveSessionId,
     sessions,
+    sessionsLoading,
     refreshSessions,
     settings,
     notify,
   } = useApp();
+  // Dashboard mode reads history over REST; sending needs its WebSocket,
+  // which is the next step of docs/dashboard-migration.md.
+  const readOnly = !client;
   useRunsVersion();
   const session = sessions.find((s) => s.id === activeSessionId);
+  const sessionProfile = session?.profile;
   const run = getRun(activeSessionId);
   const busy = Boolean(run?.busy);
 
@@ -36,10 +42,10 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadHistory = useCallback(
-    async (id: string) => {
+    async (id: string, profile?: string) => {
       setLoading(true);
       try {
-        const msgs = await client.messages(id);
+        const msgs = await loadMessages({ id, profile });
         let loaded = historyToItems(msgs);
         // A turn still streaming is already persisted from its user message
         // on; show that tail from the live run instead of twice.
@@ -59,14 +65,21 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
         setLoading(false);
       }
     },
-    [client],
+    [loadMessages],
   );
 
+  // The dashboard needs the owning profile, known once the session list loaded.
+  const waitingForProfile = readOnly && Boolean(activeSessionId) && !session;
   useEffect(() => {
     setHistory([]);
     setLoadError(null);
-    if (activeSessionId) void loadHistory(activeSessionId);
-  }, [activeSessionId, loadHistory]);
+    if (activeSessionId && !waitingForProfile) void loadHistory(activeSessionId, sessionProfile);
+  }, [activeSessionId, sessionProfile, waitingForProfile, loadHistory]);
+
+  // A remembered session that no longer exists (deleted, other login).
+  useEffect(() => {
+    if (waitingForProfile && !sessionsLoading && sessions.length > 0) setActiveSessionId(null);
+  }, [waitingForProfile, sessionsLoading, sessions.length, setActiveSessionId]);
 
   // -- scrolling -------------------------------------------------------------
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -97,6 +110,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
 
   // -- actions ---------------------------------------------------------------
   async function send(text: string, images: string[]) {
+    if (!client) return;
     let id = activeSessionId;
     try {
       if (!id) {
@@ -125,7 +139,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   const getActiveId = () => activeRef.current;
 
   async function rename() {
-    if (!session) return;
+    if (!session || !client) return;
     const title = window.prompt("Nuevo título", session.title ?? "");
     if (title == null || !title.trim()) return;
     try {
@@ -145,7 +159,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   }
 
   async function fork() {
-    if (!session) return;
+    if (!session || !client) return;
     try {
       const child = await client.forkSession(session.id, `${session.title || "Sesión"} (rama)`);
       await refreshSessions();
@@ -157,7 +171,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   }
 
   async function remove() {
-    if (!session || !window.confirm("¿Borrar esta sesión? No se puede deshacer.")) return;
+    if (!session || !client || !window.confirm("¿Borrar esta sesión? No se puede deshacer.")) return;
     try {
       await client.deleteSession(session.id);
       setActiveSessionId(null);
@@ -168,7 +182,8 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     }
   }
 
-  const title = session?.title || (activeSessionId ? "Sesión" : "Nueva conversación");
+  const title =
+    session?.title || (activeSessionId ? "Sesión" : readOnly ? "Sesiones" : "Nueva conversación");
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -178,6 +193,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
           <h2 className="truncate text-sm font-bold text-midground sm:text-base">{title}</h2>
           {session && (
             <p className="truncate font-mono text-xs text-text-tertiary">
+              {session.profile && `${session.profile} · `}
               {session.model || "hermes-agent"}
               {session.message_count != null && ` · ${session.message_count} mensajes`}
               {session.estimated_cost_usd ? ` · $${session.estimated_cost_usd.toFixed(3)}` : ""}
@@ -187,9 +203,13 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
         {busy && <Spinner className="me-2 text-midground" aria-label="Hermes está trabajando" />}
         {session && (
           <>
-            <IconButton label="Recargar" onClick={() => void loadHistory(session.id)} disabled={busy}>
+            <IconButton label="Recargar" onClick={() => void loadHistory(session.id, session.profile)} disabled={busy}>
               <RefreshCw />
             </IconButton>
+          </>
+        )}
+        {session && client && (
+          <>
             <IconButton label="Renombrar" onClick={rename} className="hidden sm:inline-flex">
               <Pencil />
             </IconButton>
@@ -213,7 +233,16 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
             )}
             {loadError && <Notice item={{ kind: "notice", key: "load", tone: "error", text: loadError }} />}
 
-            {!activeSessionId && items.length === 0 && (
+            {readOnly && !activeSessionId && (
+              <div className="pt-[8vh]">
+                <EmptyState icon={<History />} title="Elegí una sesión">
+                  Acá ves el historial de las sesiones de todos tus perfiles. Escribir desde la app con el login del
+                  dashboard llega en el próximo paso; mientras tanto podés usar el modo API key.
+                </EmptyState>
+              </div>
+            )}
+
+            {!readOnly && !activeSessionId && items.length === 0 && (
               <div className="flex flex-col items-center pt-[8vh]">
                 <EmptyState icon={<Sparkles />} title="¿En qué te ayudo?">
                   Hermes tiene acceso a sus herramientas, memoria y skills del servidor.
@@ -249,6 +278,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
                       key={item.key}
                       item={item}
                       onChoose={(choice) =>
+                        client &&
                         activeSessionId &&
                         void answerApproval(client, activeSessionId, item.key, choice).catch((err) =>
                           notify(err instanceof Error ? err.message : String(err), "error"),
@@ -277,12 +307,20 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
 
       <div className="shrink-0 px-3 pt-2 pb-[calc(var(--safe-bottom)+0.75rem)] sm:px-6">
         <div className="mx-auto w-full max-w-3xl">
-          <Composer
-            busy={busy}
-            enterSends={settings.enterSends}
-            onSend={(t, imgs) => void send(t, imgs)}
-            onStop={() => activeSessionId && void stopRun(client, activeSessionId)}
-          />
+          {client ? (
+            <Composer
+              busy={busy}
+              enterSends={settings.enterSends}
+              onSend={(t, imgs) => void send(t, imgs)}
+              onStop={() => activeSessionId && void stopRun(client, activeSessionId)}
+            />
+          ) : (
+            activeSessionId && (
+              <p className="border border-current/15 bg-card/60 px-4 py-3 text-center text-sm text-text-secondary rounded-[var(--radius-lg)]">
+                Solo lectura: con el login del dashboard todavía no se puede escribir desde la app.
+              </p>
+            )
+          )}
         </div>
       </div>
     </div>

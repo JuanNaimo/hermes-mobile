@@ -28,7 +28,7 @@ function useMediaQuery(query: string) {
 const COLLAPSED_KEY = "hermes-mobile:sidebar-collapsed";
 
 export default function App() {
-  const { connection, view, toast } = useApp();
+  const { client, dashboard, view, toast } = useApp();
   const wide = useMediaQuery(WIDE_QUERY);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(() => loadJSON(COLLAPSED_KEY, false));
@@ -49,7 +49,7 @@ export default function App() {
     saveJSON(COLLAPSED_KEY, value);
   };
 
-  if (!connection) {
+  if (!client && !dashboard) {
     return (
       <>
         <ConnectScreen />
@@ -108,9 +108,10 @@ export default function App() {
       </aside>
 
       <main className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col">
-        {view === "chat" && <ChatView leading={leading} />}
-        {view === "jobs" && <JobsPage leading={leading} />}
-        {view === "skills" && <SkillsPage leading={leading} />}
+        {(view === "chat" || (!client && (view === "jobs" || view === "skills"))) && <ChatView leading={leading} />}
+        {/* Jobs and skills still go through the API server; dashboard mode gets them later. */}
+        {client && view === "jobs" && <JobsPage leading={leading} />}
+        {client && view === "skills" && <SkillsPage leading={leading} />}
         {view === "server" && <ServerPage leading={leading} />}
       </main>
 
