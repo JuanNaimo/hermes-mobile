@@ -1,0 +1,3 @@
+# unicode-animations' postinstall only plays a spinner demo in the terminal.
+ignoredBuiltDependencies:
+  - unicode-animations

@@ -29,7 +29,7 @@
             '<div style="font:15px/1.5 system-ui,sans-serif;color:#ffe6cb;background:#041c1c;padding:24px;height:100%;box-sizing:border-box;overflow:auto">' +
             '<p style="font-weight:700;letter-spacing:.08em;text-transform:uppercase">Hermes Mobile no pudo iniciar</p>' +
             '<pre style="white-space:pre-wrap;font:13px/1.5 ui-monospace,monospace;opacity:.85"></pre>' +
-            "<p>Probá borrar <code>node_modules</code> y correr <code>npm install</code> de nuevo, y revisá la terminal donde corre <code>npm run dev</code>.</p></div>";
+            "<p>Probá borrar <code>node_modules</code> y correr <code>pnpm install</code> de nuevo, y revisá la terminal donde corre <code>pnpm dev</code>.</p></div>";
           root.querySelector("pre").textContent = msg;
         }
         window.addEventListener("error", function (e) { show(String(e.message || e.error || e)); });

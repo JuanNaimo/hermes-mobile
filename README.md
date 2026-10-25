@@ -69,7 +69,7 @@ Después reiniciá el gateway con `hermes gateway`. Por defecto escucha en el pu
 
 | Cómo abrís la app | Origen que va en `API_SERVER_CORS_ORIGINS` |
 |---|---|
-| `npm run dev` / `npm run preview` desde otra máquina | `http://<ip-de-esa-máquina>:5180` |
+| `pnpm dev` / `pnpm preview` desde otra máquina | `http://<ip-de-esa-máquina>:5180` |
 | App Android (Capacitor) | `http://localhost` |
 | App iOS / iPadOS (Capacitor) | `capacitor://localhost` |
 | Cualquier hosting estático | la URL exacta, p. ej. `https://hermes.midominio.com` |
@@ -87,11 +87,11 @@ La pantalla de conexión muestra el origen exacto que tenés que agregar.
 
 ## 2. Correr la app
 
-Requiere Node 22.
+Requiere Node 22 y [pnpm](https://pnpm.io) 10 (`corepack enable` lo activa con la versión fijada en `package.json`).
 
 ```bash
-npm install
-npm run dev        # http://0.0.0.0:5180, accesible desde la tablet en tu LAN
+pnpm install
+pnpm dev           # http://0.0.0.0:5180, accesible desde la tablet en tu LAN
 ```
 
 En la tablet abrí `http://<ip-de-tu-pc>:5180`, completá la URL del servidor
@@ -101,15 +101,15 @@ en Safari, *Compartir → Agregar a inicio*. En Chrome, *Instalar app*.
 ### Build estático
 
 ```bash
-npm run build      # genera dist/, servible desde cualquier hosting estático
-npm run preview    # sirve dist/ en :5180
+pnpm build         # genera dist/, servible desde cualquier hosting estático
+pnpm preview       # sirve dist/ en :5180
 ```
 
 ### App nativa (Capacitor)
 
 ```bash
-npm run cap:android   # genera android/ y abre Android Studio
-npm run cap:ios       # genera ios/ y abre Xcode (requiere macOS)
+pnpm cap:android   # genera android/ y abre Android Studio
+pnpm cap:ios       # genera ios/ y abre Xcode (requiere macOS)
 ```
 
 La config (`capacitor.config.ts`) sirve la app desde `http://localhost` en Android, así
@@ -123,8 +123,8 @@ streaming con razonamiento, herramientas y una aprobación (pedile que "borre" a
 además de jobs y skills.
 
 ```bash
-npm run mock       # http://0.0.0.0:8642, API key: dev
-npm run dev
+pnpm mock          # http://0.0.0.0:8642, API key: dev
+pnpm dev
 ```
 
 ## Estructura
@@ -143,6 +143,6 @@ src/
 ```
 
 ```bash
-npm test           # tests del parser SSE y del reducer del chat
-npm run typecheck
+pnpm test          # tests del parser SSE y del reducer del chat
+pnpm typecheck
 ```
