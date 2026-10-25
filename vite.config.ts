@@ -9,7 +9,11 @@ export default defineConfig({
   // (Capacitor) or the root of any static host.
   base: "./",
   resolve: {
-    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
+    alias: {
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+      // See src/stubs/three.ts.
+      three: fileURLToPath(new URL("./src/stubs/three.ts", import.meta.url)),
+    },
   },
   server: { host: true, port: 5180 },
   preview: { host: true, port: 5180 },
