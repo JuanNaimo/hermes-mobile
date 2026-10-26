@@ -54,9 +54,10 @@ Se elige en **Servidor → Apariencia**.
 ## Dos formas de conectarse
 
 - **Usuario (dashboard, `:9119`)**: un solo login con usuario y contraseña que ve **todos
-  los perfiles**, como la app de escritorio. Perfiles, sesiones, historial y chat (con
-  streaming, herramientas, aprobaciones y detener). Jobs, skills e imágenes adjuntas
-  llegan en el próximo paso de [`docs/dashboard-migration.md`](docs/dashboard-migration.md).
+  los perfiles**, como la app de escritorio. Perfiles, sesiones, historial, chat (con
+  streaming, herramientas, aprobaciones, detener e imágenes adjuntas), las preguntas del
+  agente (`clarify`, contraseña de `sudo`, secretos), jobs de todos los perfiles y skills
+  con interruptor por perfil. Ver [`docs/dashboard-migration.md`](docs/dashboard-migration.md).
 - **API key (API server, `:8642`)**: el modo original, completo, con una
   `API_SERVER_KEY` por perfil.
 
@@ -168,7 +169,10 @@ Hay un mock para cada modo:
   los perfiles `default` y `tech-insider`, sus sesiones y el historial, y el chat por
   `/api/ws` (tickets de un uso, streaming con razonamiento y herramientas, una
   aprobación si le pedís que "borre" algo, un error si el mensaje dice "falla",
-  detener). También aplica el chequeo de `Host`, de `Origin` y el CORS solo-localhost
+  detener), jobs por perfil y skills con interruptor. Disparadores en el chat:
+  "deploy"/"preguntá" abre una pregunta con opciones, "sudo"/"reiniciá" pide la
+  contraseña de sudo (`hermes`), "token"/"clave" pide un secreto y "vault" manda un
+  pedido que la app rechaza. También aplica el chequeo de `Host`, de `Origin` y el CORS solo-localhost
   del server real.
 
 ```bash
@@ -198,6 +202,7 @@ src/
 │   ├── transcript.ts   # historial + eventos SSE → items del chat (reducer puro)
 │   └── runs.ts         # turnos en curso fuera de React (no se cortan al navegar)
 ├── components/         # sidebar, composer, mensajes, markdown, primitivas táctiles
+│   └── ProfileChips.tsx# filtro de perfiles (sidebar, jobs, skills)
 plugins/native-websocket/  # plugin Capacitor local: WebSocket nativo sin Origin
 ├── pages/              # Conexión, Chat, Jobs, Skills, Servidor
 ├── themes/presets.ts   # paletas del dashboard (Hermes Teal, Midnight, Ember…)

@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useState, type FormEvent } from "react";
 import { Spinner } from "@/components/ds";
 import {
   AlertTriangle,
@@ -6,11 +6,13 @@ import {
   Check,
   ChevronRight,
   Info,
+  KeyRound,
+  MessageCircleQuestion,
   ShieldAlert,
   Wrench,
   X,
 } from "lucide-react";
-import type { ChatItem } from "@/lib/transcript";
+import type { ChatItem, ClarifyQuestion } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import { Markdown } from "./Markdown";
 
@@ -216,5 +218,228 @@ export function Notice({ item }: { item: Item<"notice"> }) {
       {error ? <AlertTriangle className="mt-0.5 size-4 shrink-0" /> : <Info className="mt-0.5 size-4 shrink-0" />}
       <span className="break-words">{item.text}</span>
     </div>
+  );
+}
+
+/**
+ * The agent asking for input mid-turn (dashboard gateway server→client
+ * requests). Answers follow tui_gateway/contracts/server_requests.py:
+ * clarify → `{answers: {qid: string | null}}` (multi-select as a JSON array of
+ * choice labels; no `answers` cancels them all), sudo / secret → `{value}`
+ * (`""` means skipped).
+ */
+export function InputCard({
+  item,
+  onAnswer,
+}: {
+  item: Item<"input">;
+  onAnswer: (result: Record<string, unknown>, resolved: "answered" | "skipped") => Promise<void> | void;
+}) {
+  const [sending, setSending] = useState(false);
+  const send = async (result: Record<string, unknown>, resolved: "answered" | "skipped") => {
+    setSending(true);
+    try {
+      await onAnswer(result, resolved);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const title =
+    item.method === "clarify" ? "Hermes pregunta" : item.method === "sudo" ? "Contraseña de sudo" : "Hermes necesita un dato";
+
+  return (
+    <div className="animate-rise border border-midground/30 bg-midground/5 p-4 rounded-[var(--radius-md)]">
+      <div className="flex items-center gap-2 text-midground">
+        {item.method === "clarify" ? <MessageCircleQuestion className="size-5" /> : <KeyRound className="size-5" />}
+        <span className="text-display text-sm font-bold tracking-[0.12em]">{title}</span>
+      </div>
+      {item.resolved ? (
+        <p className="mt-3 text-sm text-text-secondary">
+          {item.resolved === "answered"
+            ? "Respuesta enviada."
+            : item.resolved === "skipped"
+              ? "Omitido."
+              : "El servidor retiró la pregunta (turno detenido o vencido)."}
+        </p>
+      ) : item.method === "clarify" ? (
+        <ClarifyForm questions={item.questions ?? []} sending={sending} onSend={send} />
+      ) : (
+        <SecretForm item={item} sending={sending} onSend={send} />
+      )}
+    </div>
+  );
+}
+
+const OTHER = "\u0000other";
+
+function ClarifyForm({
+  questions,
+  sending,
+  onSend,
+}: {
+  questions: ClarifyQuestion[];
+  sending: boolean;
+  onSend: (result: Record<string, unknown>, resolved: "answered" | "skipped") => void;
+}) {
+  // qid → selected choice labels (OTHER = use the free-text box).
+  const [picked, setPicked] = useState<Record<string, string[]>>({});
+  const [other, setOther] = useState<Record<string, string>>({});
+
+  function toggle(q: ClarifyQuestion, label: string) {
+    setPicked((prev) => {
+      const cur = prev[q.qid] ?? [];
+      const multi = q.multi_select && label !== OTHER && !cur.includes(OTHER);
+      const next = cur.includes(label)
+        ? cur.filter((l) => l !== label)
+        : multi
+          ? [...cur, label]
+          : [label];
+      return { ...prev, [q.qid]: next };
+    });
+  }
+
+  function answerFor(q: ClarifyQuestion): string | null {
+    const sel = picked[q.qid] ?? [];
+    const typed = (other[q.qid] ?? "").trim();
+    const hasChoices = Boolean(q.choices?.length);
+    if (!hasChoices || sel.includes(OTHER)) return typed || null;
+    if (!sel.length) return null;
+    return q.multi_select ? JSON.stringify(sel) : sel[0];
+  }
+
+  const answers = Object.fromEntries(questions.map((q) => [q.qid, answerFor(q)]));
+  const anyAnswered = Object.values(answers).some((a) => a != null);
+
+  return (
+    <div className="mt-3 flex flex-col gap-4">
+      {questions.map((q) => {
+        const sel = picked[q.qid] ?? [];
+        const showText = !q.choices?.length || sel.includes(OTHER);
+        return (
+          <div key={q.qid} className="flex flex-col gap-2">
+            <p className="text-sm text-midground">{q.question}</p>
+            {q.multi_select && <p className="text-xs text-text-tertiary">Podés elegir varias.</p>}
+            {Boolean(q.choices?.length) && (
+              <div className="flex flex-wrap gap-2">
+                {[...(q.choices ?? []), OTHER].map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    aria-pressed={sel.includes(c)}
+                    onClick={() => toggle(q, c)}
+                    className={cn(
+                      "min-h-11 border px-3 text-sm transition-colors rounded-[var(--radius-sm)]",
+                      sel.includes(c)
+                        ? "border-midground bg-midground text-background-base"
+                        : "border-current/25 text-text-secondary hover:text-midground",
+                    )}
+                  >
+                    {c === OTHER ? "Otra…" : c}
+                  </button>
+                ))}
+              </div>
+            )}
+            {showText && (
+              <input
+                value={other[q.qid] ?? ""}
+                onChange={(e) => setOther((prev) => ({ ...prev, [q.qid]: e.target.value }))}
+                placeholder="Tu respuesta"
+                className="h-11 border border-current/20 bg-background/40 px-3 text-base text-midground placeholder:text-text-disabled focus:outline-none focus:border-midground/40 rounded-[var(--radius-sm)]"
+              />
+            )}
+          </div>
+        );
+      })}
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={sending || !anyAnswered}
+          onClick={() => onSend({ answers, outcome: "submitted" }, "answered")}
+          className="min-h-11 border border-midground bg-midground px-4 text-display text-xs font-bold tracking-[0.15em] text-background-base disabled:opacity-40 rounded-[var(--radius-sm)]"
+        >
+          Responder
+        </button>
+        <button
+          type="button"
+          disabled={sending}
+          // No `answers`: the agent treats every question as cancelled.
+          onClick={() => onSend({ outcome: "cancelled" }, "skipped")}
+          className="min-h-11 border border-current/25 px-4 text-display text-xs font-bold tracking-[0.15em] text-text-secondary hover:text-midground rounded-[var(--radius-sm)]"
+        >
+          Omitir
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SecretForm({
+  item,
+  sending,
+  onSend,
+}: {
+  item: Item<"input">;
+  sending: boolean;
+  onSend: (result: Record<string, unknown>, resolved: "answered" | "skipped") => void;
+}) {
+  const [value, setValue] = useState("");
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!value) return;
+    const v = value;
+    // Don't keep the secret in component state once it's on its way.
+    setValue("");
+    onSend({ value: v }, "answered");
+  };
+  return (
+    <form onSubmit={submit} className="mt-3 flex flex-col gap-3">
+      {item.method === "sudo" ? (
+        <>
+          <p className="text-sm text-text-secondary">El agente quiere correr un comando con sudo:</p>
+          {item.command && (
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words border border-current/15 bg-background/60 p-3 font-mono text-xs text-midground rounded-[var(--radius-sm)]">
+              {item.command}
+            </pre>
+          )}
+        </>
+      ) : (
+        <p className="text-sm text-text-secondary">
+          {item.prompt || "Un valor secreto para continuar."}
+          {item.envVar && (
+            <>
+              {" "}
+              <code>{item.envVar}</code>
+            </>
+          )}
+        </p>
+      )}
+      <input
+        type="password"
+        autoComplete="off"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder={item.method === "sudo" ? "Contraseña" : (item.envVar ?? "Valor")}
+        className="h-11 border border-current/20 bg-background/40 px-3 font-mono text-base text-midground placeholder:text-text-disabled focus:outline-none focus:border-midground/40 rounded-[var(--radius-sm)]"
+      />
+      <p className="text-xs text-text-tertiary">Se envía al servidor y no se guarda en la app.</p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          disabled={sending || !value}
+          className="min-h-11 border border-midground bg-midground px-4 text-display text-xs font-bold tracking-[0.15em] text-background-base disabled:opacity-40 rounded-[var(--radius-sm)]"
+        >
+          Enviar
+        </button>
+        <button
+          type="button"
+          disabled={sending}
+          onClick={() => onSend({ value: "" }, "skipped")}
+          className="min-h-11 border border-current/25 px-4 text-display text-xs font-bold tracking-[0.15em] text-text-secondary hover:text-midground rounded-[var(--radius-sm)]"
+        >
+          Omitir
+        </button>
+      </div>
+    </form>
   );
 }

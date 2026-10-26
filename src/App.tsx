@@ -108,10 +108,9 @@ export default function App() {
       </aside>
 
       <main className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col">
-        {(view === "chat" || (!client && (view === "jobs" || view === "skills"))) && <ChatView leading={leading} />}
-        {/* Jobs and skills still go through the API server; dashboard mode gets them later. */}
-        {client && view === "jobs" && <JobsPage leading={leading} />}
-        {client && view === "skills" && <SkillsPage leading={leading} />}
+        {view === "chat" && <ChatView leading={leading} />}
+        {view === "jobs" && <JobsPage leading={leading} />}
+        {view === "skills" && <SkillsPage leading={leading} />}
         {view === "server" && <ServerPage leading={leading} />}
       </main>
 

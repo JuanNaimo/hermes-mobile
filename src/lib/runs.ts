@@ -13,6 +13,8 @@ import { applyStreamEvent, settle, userItem, type ChatItem, type StreamState } f
 export interface RunControls {
   stop(): Promise<void>;
   approve(item: Extract<ChatItem, { kind: "approval" }>, choice: string): Promise<void>;
+  /** Answer a clarify / sudo / secret card (dashboard only). */
+  respond(item: Extract<ChatItem, { kind: "input" }>, result: Record<string, unknown>): Promise<void>;
 }
 
 export interface LiveRun {
@@ -106,6 +108,27 @@ export async function answerApproval(sessionId: string, itemKey: string, choice:
   });
 }
 
+/** Send the answer to an input card, then mark it (the answer itself is not kept). */
+export async function answerInput(
+  sessionId: string,
+  itemKey: string,
+  result: Record<string, unknown>,
+  resolved: "answered" | "skipped",
+) {
+  const run = runs.get(sessionId);
+  const item = run?.stream.items.find((it) => it.key === itemKey);
+  if (!run || !item || item.kind !== "input") return;
+  await run.controls.respond(item, result);
+  const current = runs.get(sessionId) ?? run;
+  set(sessionId, {
+    ...current,
+    stream: {
+      ...current.stream,
+      items: current.stream.items.map((it) => (it.key === itemKey && it.kind === "input" ? { ...it, resolved } : it)),
+    },
+  });
+}
+
 // -- API server driver (SSE over /api/sessions/{id}/chat/stream) -----------------
 
 export async function startRun(
@@ -137,6 +160,8 @@ export async function startRun(
     async approve(item, choice) {
       await client.approve(item.runId || runs.get(sessionId)?.stream.runId || "", choice, item.requestId);
     },
+    // The API server's stream never asks for input.
+    async respond() {},
   });
 
   try {

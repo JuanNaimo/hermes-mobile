@@ -1,10 +1,41 @@
-import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Badge, Button, Spinner } from "@/components/ds";
 import { CalendarClock, Pause, Play, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
-import type { Job } from "@/lib/api";
-import { useApp, useClient } from "@/store";
+import type { HermesClient, Job } from "@/lib/api";
+import type { DashboardClient } from "@/lib/dashboard";
+import { useApp } from "@/store";
 import { formatDate } from "@/lib/utils";
 import { EmptyState, IconButton, PageTitle, Panel, SectionLabel, TextField } from "@/components/ui";
+import { ProfileChips } from "@/components/ProfileChips";
+
+type JobAction = "pause" | "resume" | "run";
+
+/** The same page over the API server's /api/jobs or the dashboard's /api/cron/jobs. */
+interface JobsBackend {
+  list(): Promise<Job[]>;
+  create(job: { name: string; schedule: string; prompt: string }, profile: string): Promise<unknown>;
+  act(job: Job, action: JobAction): Promise<unknown>;
+  remove(job: Job): Promise<unknown>;
+}
+
+function apiJobs(client: HermesClient): JobsBackend {
+  return {
+    list: () => client.jobs(),
+    create: (job) => client.createJob(job),
+    act: (job, action) => client.jobAction(job.id, action),
+    remove: (job) => client.deleteJob(job.id),
+  };
+}
+
+function dashboardJobs(dashboard: DashboardClient, profile: string): JobsBackend {
+  return {
+    list: () => dashboard.cronJobs(profile),
+    create: (job, target) => dashboard.createCronJob(target, job),
+    // The dashboard calls "run now" trigger; a paused job is resumed for that run.
+    act: (job, action) => dashboard.cronAction(job.id, job.profile, action === "run" ? "trigger" : action),
+    remove: (job) => dashboard.deleteCronJob(job.id, job.profile),
+  };
+}
 
 function scheduleText(job: Job): string {
   if (job.schedule_display) return job.schedule_display;
@@ -21,32 +52,38 @@ function isPaused(job: Job) {
 }
 
 export function JobsPage({ leading }: { leading?: ReactNode }) {
-  const client = useClient();
-  const { notify } = useApp();
+  const { client, dashboard, profiles, profileFilter, setProfileFilter, notify } = useApp();
+  const backend = useMemo(
+    () => (dashboard ? dashboardJobs(dashboard, profileFilter) : client ? apiJobs(client) : null),
+    [client, dashboard, profileFilter],
+  );
+  const profileNames = profiles.map((p) => p.name);
   const [jobs, setJobs] = useState<Job[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
 
   const load = useCallback(async () => {
+    if (!backend) return;
     try {
-      setJobs(await client.jobs());
+      setJobs(await backend.list());
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [client]);
+  }, [backend]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  async function act(job: Job, action: "pause" | "resume" | "run" | "delete") {
+  async function act(job: Job, action: JobAction | "delete") {
+    if (!backend) return;
     try {
       if (action === "delete") {
         if (!window.confirm(`¿Borrar el job "${job.name ?? job.id}"?`)) return;
-        await client.deleteJob(job.id);
+        await backend.remove(job);
       } else {
-        await client.jobAction(job.id, action);
+        await backend.act(job, action);
       }
       notify(
         { pause: "Job pausado", resume: "Job reanudado", run: "Job lanzado", delete: "Job borrado" }[action],
@@ -74,8 +111,16 @@ export function JobsPage({ leading }: { leading?: ReactNode }) {
         Jobs
       </PageTitle>
 
-      {showForm && (
+      {dashboard && profileNames.length > 1 && (
+        <ProfileChips profiles={profileNames} value={profileFilter} onChange={setProfileFilter} />
+      )}
+
+      {showForm && backend && (
         <NewJobForm
+          backend={backend}
+          // Dashboard: the job lands in one profile; API key mode has only one.
+          profiles={dashboard ? profileNames : []}
+          defaultProfile={profileFilter !== "all" ? profileFilter : (profiles.find((p) => p.is_default)?.name ?? "default")}
           onCreated={() => {
             setShowForm(false);
             notify("Job creado");
@@ -100,11 +145,14 @@ export function JobsPage({ leading }: { leading?: ReactNode }) {
         {jobs?.map((job) => {
           const paused = isPaused(job);
           return (
-            <Panel key={job.id} className="flex flex-col gap-3 p-4">
+            <Panel key={`${job.profile ?? ""}/${job.id}`} className="flex flex-col gap-3 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
                   <h3 className="truncate font-bold text-midground">{job.name || job.id}</h3>
-                  <p className="font-mono text-xs text-text-tertiary">{scheduleText(job)}</p>
+                  <p className="font-mono text-xs text-text-tertiary">
+                    {scheduleText(job)}
+                    {dashboard && profileFilter === "all" && job.profile ? ` · ${job.profile}` : ""}
+                  </p>
                 </div>
                 <Badge tone={paused ? "secondary" : job.last_status === "error" ? "destructive" : "success"}>
                   {paused ? "Pausado" : job.last_status || "Activo"}
@@ -148,8 +196,18 @@ export function JobsPage({ leading }: { leading?: ReactNode }) {
   );
 }
 
-function NewJobForm({ onCreated }: { onCreated: () => void }) {
-  const client = useClient();
+function NewJobForm({
+  backend,
+  profiles,
+  defaultProfile,
+  onCreated,
+}: {
+  backend: JobsBackend;
+  profiles: string[];
+  defaultProfile: string;
+  onCreated: () => void;
+}) {
+  const [profile, setProfile] = useState(defaultProfile);
   const [name, setName] = useState("");
   const [schedule, setSchedule] = useState("");
   const [prompt, setPrompt] = useState("");
@@ -161,7 +219,7 @@ function NewJobForm({ onCreated }: { onCreated: () => void }) {
     setBusy(true);
     setError(null);
     try {
-      await client.createJob({ name: name.trim(), schedule: schedule.trim(), prompt });
+      await backend.create({ name: name.trim(), schedule: schedule.trim(), prompt }, profile);
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -173,6 +231,12 @@ function NewJobForm({ onCreated }: { onCreated: () => void }) {
   return (
     <Panel className="p-4">
       <form onSubmit={submit} className="flex flex-col gap-4">
+        {profiles.length > 1 && (
+          <div className="flex flex-col gap-1.5">
+            <SectionLabel>Perfil</SectionLabel>
+            <ProfileChips includeAll={false} profiles={profiles} value={profile} onChange={setProfile} />
+          </div>
+        )}
         <div className="grid gap-4 sm:grid-cols-2">
           <TextField label="Nombre" value={name} onChange={(e) => setName(e.target.value)} required />
           <TextField

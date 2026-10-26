@@ -17,7 +17,8 @@ server real desde la PC del usuario.
    (`scripts/mock-dashboard.mjs`); falta probarlo contra el server real.
 2. ✅ Chat por WebSocket JSON-RPC (reemplaza el SSE de `/api/sessions/{id}/chat/stream`).
    **Hecho contra el mock**; falta probarlo contra el server real y en un APK.
-3. Aprobaciones, stop, skills y jobs vía dashboard.
+3. ✅ Jobs, skills, imágenes adjuntas y las tarjetas `clarify`/`sudo`/`secret` vía
+   dashboard. **Hecho contra el mock**; falta probarlo contra el server real.
 4. Mantener el modo API key actual como alternativa en la pantalla de conexión
    hasta que el modo dashboard esté completo.
 5. Extender `scripts/mock-server.mjs` (o un mock nuevo) para imitar el dashboard.
@@ -94,7 +95,7 @@ proveedores de inferencia, no del dashboard.)
 ## Skills y jobs
 
 - Skills: `GET /api/skills?profile=` (con `enabled`, `usage`, `provenance`),
-  `PUT /api/skills/toggle?profile=`. Puede andar aunque `/v1/skills` del API
+  `PUT /api/skills/toggle` con `{name, enabled, profile}` en el body. Puede andar aunque `/v1/skills` del API
   server devuelva 500 (pasa en el server del usuario).
 - Cron: `GET /api/cron/jobs?profile=all|<nombre>`; `POST /api/cron/jobs`,
   `PUT|DELETE /api/cron/jobs/{id}`, `POST /api/cron/jobs/{id}/pause|resume|trigger`.
@@ -158,7 +159,24 @@ proveedores de inferencia, no del dashboard.)
 - **Sin probar**: el plugin nativo en un dispositivo (no hay Android SDK ni Xcode acá).
   `SocketHub` sí corrió en la JVM contra el mock: handshake rechazado → `error` 403 +
   `close` 1006 `wasOpen=false`; sesión completa con streaming. El Swift no se compiló.
-- Pendiente para el paso 3: imágenes adjuntas (`file.attach`), `clarify`/`sudo`/`secret`,
-  jobs y skills por el dashboard.
+
+## Estado del paso 3
+
+- Jobs: `GET /api/cron/jobs?profile=all` trae los de todos los perfiles, cada uno con su
+  `profile`; crear, pausar, reanudar, ejecutar (`trigger`) y borrar llevan `?profile=`.
+  La pantalla de Jobs filtra con los mismos chips de perfil que el sidebar.
+- Skills: `GET /api/skills?profile=` y `PUT /api/skills/toggle` (cambio optimista que se
+  revierte si falla); toolsets con `GET /api/tools/toolsets?profile=`.
+- Imágenes: se mandan con `image.attach_bytes {session_id, content_base64, filename}`
+  antes de `prompt.submit` (`file.attach` es para archivos que no son imagen). Si el
+  server responde `attached: false`, el turno muestra el motivo.
+- `clarify`: `{questions:[{qid, question, choices?, multi_select}]}` → se responde
+  `{answers:{qid: texto | null}, outcome}`; multi-selección = array JSON de etiquetas.
+  "Omitir" responde sin `answers` (cancela todas).
+- `sudo` (`{command}`) y `secret` (`{env_var, prompt}`) → `{value}`; `""` = omitido. El
+  valor se borra del formulario al enviarlo y no queda en el transcript.
+- `request.cancel` retira cualquier tarjeta abierta. `vault.*` y otros pedidos siguen
+  respondiendo -32601.
+- **Sin probar**: el server real y un APK/iPhone.
 
 Nada de esto fue probado todavía con un token real.

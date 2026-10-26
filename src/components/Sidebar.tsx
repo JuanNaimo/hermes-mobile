@@ -19,13 +19,13 @@ import { busySessions, useRunsVersion } from "@/lib/runs";
 import { cn, relativeTime } from "@/lib/utils";
 import { IconButton, SectionLabel, StatusDot } from "./ui";
 import { Wordmark } from "./Brand";
+import { ProfileChips } from "./ProfileChips";
 
-const NAV: { view: View; label: string; icon: typeof MessageSquare; dashboard: boolean }[] = [
-  { view: "chat", label: "Chat", icon: MessageSquare, dashboard: true },
-  // Dashboard mode gets jobs and skills in a later step of the migration.
-  { view: "jobs", label: "Jobs", icon: CalendarClock, dashboard: false },
-  { view: "skills", label: "Skills", icon: Puzzle, dashboard: false },
-  { view: "server", label: "Servidor", icon: Server, dashboard: true },
+const NAV: { view: View; label: string; icon: typeof MessageSquare }[] = [
+  { view: "chat", label: "Chat", icon: MessageSquare },
+  { view: "jobs", label: "Jobs", icon: CalendarClock },
+  { view: "skills", label: "Skills", icon: Puzzle },
+  { view: "server", label: "Servidor", icon: Server },
 ];
 
 export function Sidebar({
@@ -56,7 +56,6 @@ export function Sidebar({
     setProfileFilter,
   } = useApp();
   const dashboardMode = isDashboard(connection);
-  const nav = NAV.filter((n) => !dashboardMode || n.dashboard);
   useRunsVersion();
   const running = new Set(busySessions());
   const [query, setQuery] = useState("");
@@ -102,8 +101,8 @@ export function Sidebar({
       </div>
 
       <nav aria-label="Navegación" className="shrink-0 border-b border-current/10 py-1.5">
-        <ul className={cn("grid", nav.length === 4 ? "grid-cols-4" : "grid-cols-2")}>
-          {nav.map(({ view: v, label, icon: Icon }) => {
+        <ul className="grid grid-cols-4">
+          {NAV.map(({ view: v, label, icon: Icon }) => {
             const active = view === v;
             return (
               <li key={v}>
@@ -152,7 +151,12 @@ export function Sidebar({
           />
         </label>
         {dashboardMode && profiles.length > 0 && (
-          <ProfileChips profiles={profiles.map((p) => p.name)} value={profileFilter} onChange={setProfileFilter} />
+          <ProfileChips
+            className="-mx-3 px-3"
+            profiles={profiles.map((p) => p.name)}
+            value={profileFilter}
+            onChange={setProfileFilter}
+          />
         )}
       </div>
 
@@ -242,39 +246,6 @@ export function Sidebar({
 function connectionTitle(c: AnyConnection): string {
   if (isDashboard(c)) return `${c.username} · ${c.label || "dashboard"}`;
   return `${c.label || "Hermes"}${c.profile ? ` · ${c.profile}` : ""}`;
-}
-
-/** Profile filter for the dashboard's cross-profile session list. */
-function ProfileChips({
-  profiles,
-  value,
-  onChange,
-}: {
-  profiles: string[];
-  value: string;
-  onChange: (p: string) => void;
-}) {
-  return (
-    <div role="radiogroup" aria-label="Perfil" className="-mx-3 flex gap-1.5 overflow-x-auto px-3 scrollbar-none">
-      {["all", ...profiles].map((p) => (
-        <button
-          key={p}
-          type="button"
-          role="radio"
-          aria-checked={value === p}
-          onClick={() => onChange(p)}
-          className={cn(
-            "h-9 shrink-0 border px-3 text-sm transition-colors rounded-[var(--radius-sm)]",
-            value === p
-              ? "border-midground bg-midground text-background-base"
-              : "border-current/20 text-text-secondary hover:text-midground",
-          )}
-        >
-          {p === "all" ? "Todos" : p}
-        </button>
-      ))}
-    </div>
-  );
 }
 
 /**

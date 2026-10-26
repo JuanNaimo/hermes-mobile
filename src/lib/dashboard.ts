@@ -1,6 +1,6 @@
 import { findCookie, httpRequest, isNativeApp, type HttpRequest, type HttpResponse } from "./http.ts";
 import { sha256 } from "./sha256.ts";
-import type { Message, Session } from "./api.ts";
+import type { Job, Message, Session, Skill, Toolset } from "./api.ts";
 
 /**
  * Client for the Hermes dashboard (`hermes dashboard`, default port 9119):
@@ -330,4 +330,52 @@ export class DashboardClient {
     );
     return res?.messages ?? [];
   }
+
+  // -- cron jobs (hermes_cli/web_routers/cron.py) ---------------------------------
+
+  /** Jobs of every profile (`"all"`, each tagged with `profile`) or of one. */
+  async cronJobs(profile = "all"): Promise<Job[]> {
+    const res = await this.request<Job[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`);
+    return Array.isArray(res) ? res : [];
+  }
+
+  createCronJob(profile: string, job: { name: string; schedule: string; prompt: string }) {
+    return this.request<Job>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, { method: "POST", json: job });
+  }
+
+  /** `trigger` runs it now (a paused job is resumed for that run). */
+  cronAction(id: string, profile: string | undefined, action: "pause" | "resume" | "trigger") {
+    return this.request<Job>(`/api/cron/jobs/${encodeURIComponent(id)}/${action}${profileQuery(profile)}`, {
+      method: "POST",
+    });
+  }
+
+  deleteCronJob(id: string, profile?: string) {
+    return this.request<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}${profileQuery(profile)}`, {
+      method: "DELETE",
+    });
+  }
+
+  // -- skills and toolsets (web_routers/skills.py, web_routers/tools.py) ----------
+
+  async skills(profile: string): Promise<Skill[]> {
+    const res = await this.request<Skill[]>(`/api/skills${profileQuery(profile)}`);
+    return Array.isArray(res) ? res : [];
+  }
+
+  setSkillEnabled(profile: string, name: string, enabled: boolean) {
+    return this.request<{ ok: boolean }>(`/api/skills/toggle${profileQuery(profile)}`, {
+      method: "PUT",
+      json: { name, enabled, profile },
+    });
+  }
+
+  async toolsets(profile: string): Promise<Toolset[]> {
+    const res = await this.request<Toolset[]>(`/api/tools/toolsets${profileQuery(profile)}`);
+    return Array.isArray(res) ? res : [];
+  }
+}
+
+function profileQuery(profile?: string): string {
+  return profile ? `?profile=${encodeURIComponent(profile)}` : "";
 }

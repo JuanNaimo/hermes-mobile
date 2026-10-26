@@ -36,8 +36,11 @@ export class GatewayError extends Error {
   }
 }
 
-/** Server→client requests this client answers; anything else gets -32601 so it fails fast. */
-const HANDLED_SERVER_REQUESTS = new Set(["approval"]);
+/**
+ * Server→client requests this client answers; anything else (vault prompts,
+ * desktop window bridges…) gets -32601 so the agent fails fast instead of waiting.
+ */
+const HANDLED_SERVER_REQUESTS = new Set(["approval", "clarify", "sudo", "secret"]);
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const READY_TIMEOUT_MS = 15_000;

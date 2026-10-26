@@ -4,8 +4,8 @@ import { ArrowDown, GitBranch, Pencil, RefreshCw, Sparkles, Trash2, WifiOff } fr
 import { useApp } from "@/store";
 import { ApiError } from "@/lib/api";
 import { historyToItems, type ChatItem } from "@/lib/transcript";
-import { answerApproval, clearRun, getRun, startRun, stopRun, useRunsVersion } from "@/lib/runs";
-import { ApprovalCard, AssistantMessage, Notice, ToolActivity, UserMessage } from "@/components/ChatItems";
+import { answerApproval, answerInput, clearRun, getRun, startRun, stopRun, useRunsVersion } from "@/lib/runs";
+import { ApprovalCard, AssistantMessage, InputCard, Notice, ToolActivity, UserMessage } from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
 import { EmptyState, IconButton, SectionLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -122,7 +122,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
 
   // -- actions ---------------------------------------------------------------
   async function send(text: string, images: string[]) {
-    if (chat && !client) return sendDashboard(chat, text);
+    if (chat && !client) return sendDashboard(chat, text, images);
     if (!client) return;
     let id = activeSessionId;
     try {
@@ -146,13 +146,13 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     });
   }
 
-  async function sendDashboard(dc: NonNullable<typeof chat>, text: string) {
+  async function sendDashboard(dc: NonNullable<typeof chat>, text: string, images: string[]) {
     let id = activeSessionId;
     let profile = sessionProfile;
     try {
       if (!id) {
         profile = targetProfile;
-        id = await dc.create(profile, text.replace(/\s+/g, " ").slice(0, 60));
+        id = await dc.create(profile, (text || "Imagen").replace(/\s+/g, " ").slice(0, 60));
       }
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err), "error");
@@ -162,7 +162,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     setPinned(true);
     const sessionId = id;
     // `send` registers the live run synchronously, before any await.
-    void dc.send(sessionId, profile, text, () => {
+    void dc.send(sessionId, profile, text, images, () => {
       void refreshSessions();
       if (getActiveId() === sessionId && !endedWithNotice(sessionId)) void loadHistory(sessionId, profile);
     });
@@ -344,6 +344,20 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
                       }
                     />
                   );
+                case "input":
+                  return (
+                    <InputCard
+                      key={item.key}
+                      item={item}
+                      onAnswer={(result, resolved) =>
+                        activeSessionId
+                          ? answerInput(activeSessionId, item.key, result, resolved).catch((err) =>
+                              notify(err instanceof Error ? err.message : String(err), "error"),
+                            )
+                          : undefined
+                      }
+                    />
+                  );
                 case "notice":
                   return <Notice key={item.key} item={item} />;
               }
@@ -374,9 +388,6 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
           <Composer
             busy={busy}
             enterSends={settings.enterSends}
-            // The dashboard socket takes text turns; image attachments go through
-            // its file.attach flow, not wired yet.
-            allowImages={!dashboardMode}
             onSend={(t, imgs) => void send(t, imgs)}
             onStop={() =>
               activeSessionId &&

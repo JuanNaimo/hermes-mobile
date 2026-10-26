@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import WS from "ws";
 import { DashboardClient, dashboardLogin } from "../src/lib/dashboard.ts";
 import { GatewayClient, type GatewayEvent } from "../src/lib/gateway.ts";
-import { approvalToStream, gatewayEventToStream } from "../src/lib/gatewayEvents.ts";
+import { gatewayEventToStream, serverRequestToStream } from "../src/lib/gatewayEvents.ts";
 import { applyStreamEvent, settle, type StreamState } from "../src/lib/transcript.ts";
 import { webSocket } from "../src/lib/socket.ts";
 // @ts-expect-error plain JS module without types
@@ -20,17 +20,22 @@ before(async () => {
 });
 after(() => mock.close());
 
-/** Connect a gateway client that auto-answers approvals with `choice`. */
-function gateway(choice = "once") {
+/**
+ * Connect a gateway client that auto-answers what the agent asks: approvals
+ * with `choice`, other requests with `answers[method]` (left unanswered when
+ * absent, so a test can interrupt while the card is up).
+ */
+function gateway(choice = "once", answers: Record<string, Record<string, unknown>> = {}) {
   let state: StreamState = { items: [], finished: false };
   const apply = (name: string, payload: Record<string, unknown>) => (state = applyStreamEvent(state, name, payload));
   const gw: GatewayClient = new GatewayClient({
     url: (attempt) => dash.wsUrl(attempt),
     socketFactory: webSocket,
     onServerRequest: (req) => {
-      const [name, payload] = approvalToStream(req);
+      const [name, payload] = serverRequestToStream(req);
       apply(name, payload);
-      gw.respond(req.id, { choice });
+      if (req.method === "approval") gw.respond(req.id, { choice });
+      else if (answers[req.method]) gw.respond(req.id, answers[req.method]);
     },
   });
   const events: GatewayEvent[] = [];
@@ -104,10 +109,90 @@ test("answers server requests it doesn't handle with -32601 instead of hanging",
   const { gw, events, done } = gateway();
   const created = await gw.request<{ session_id: string }>("session.create", { profile: "default" });
   const finished = done();
-  await gw.request("prompt.submit", { session_id: created.session_id, text: "te hago una pregunta" });
+  await gw.request("prompt.submit", { session_id: created.session_id, text: "necesito un código del vault" });
   await finished;
-  assert.ok(events.some((e) => e.type === "status.update" && e.payload.text === "clarify declined"));
+  assert.ok(events.some((e) => e.type === "status.update" && e.payload.text === "vault declined"));
   gw.close();
+});
+
+/** One turn in a new session; returns the final assistant text and the reduced items. */
+async function turn(text: string, answers: Record<string, Record<string, unknown>> = {}, setup?: (gw: GatewayClient, sid: string) => Promise<void>) {
+  const { gw, done, state } = gateway("once", answers);
+  const created = await gw.request<{ session_id: string }>("session.create", { profile: "default" });
+  await setup?.(gw, created.session_id);
+  const finished = done();
+  await gw.request("prompt.submit", { session_id: created.session_id, text });
+  await finished;
+  gw.close();
+  const items = state().items;
+  const last = items.at(-1);
+  return { items, text: last && last.kind === "assistant" ? last.text : "" };
+}
+
+test("clarify: choice cards, multi-select answered as a JSON array of labels", async () => {
+  const { items, text } = await turn("hacé el deploy", {
+    clarify: { answers: { q1: "prod", q2: JSON.stringify(["api", "worker"]) }, outcome: "submitted" },
+  });
+  const card = items.find((i) => i.kind === "input");
+  assert.ok(card && card.kind === "input" && card.method === "clarify" && card.questions?.length === 2);
+  assert.match(text, /Deploy a \*\*prod\*\*; servicios: api, worker/);
+});
+
+test("clarify skipped (no answers) and sudo / secret values", async () => {
+  assert.match((await turn("hacé el deploy", { clarify: { outcome: "cancelled" } })).text, /No respondiste/);
+  assert.match((await turn("reiniciá nginx", { sudo: { value: "hermes" } })).text, /Reinicié nginx/);
+  assert.match((await turn("reiniciá nginx", { sudo: { value: "" } })).text, /Sin contraseña/);
+  const secret = await turn("configurá el token", { secret: { value: "ghp_123456" } });
+  const card = secret.items.find((i) => i.kind === "input");
+  assert.ok(card && card.kind === "input" && card.envVar === "GITHUB_TOKEN");
+  assert.match(secret.text, /GITHUB_TOKEN \(10 caracteres\)/);
+});
+
+test("an interrupt withdraws an open question", async () => {
+  const { gw, done, state } = gateway(); // nobody answers the sudo card
+  const created = await gw.request<{ session_id: string }>("session.create", { profile: "default" });
+  const finished = done();
+  await gw.request("prompt.submit", { session_id: created.session_id, text: "reiniciá nginx" });
+  while (!state().items.some((i) => i.kind === "input")) await new Promise((r) => setTimeout(r, 10));
+  await gw.request("session.interrupt", { session_id: created.session_id });
+  await finished;
+  const card = state().items.find((i) => i.kind === "input");
+  assert.ok(card && card.kind === "input" && card.resolved === "cancelled");
+  gw.close();
+});
+
+test("images go up with image.attach_bytes before the prompt", async () => {
+  // Smallest JPEG/PNG headers are enough: the gateway sniffs magic bytes.
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]).toString("base64");
+  const { text } = await turn("¿qué ves?", {}, async (gw, sid) => {
+    const res = await gw.request<{ attached: boolean; count: number }>("image.attach_bytes", {
+      session_id: sid,
+      content_base64: jpeg,
+      filename: "foto.jpg",
+    });
+    assert.equal(res.attached, true);
+  });
+  assert.match(text, /Recibí 1 imagen/);
+});
+
+test("DashboardChat sends picked images and shows them in the user bubble", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getRun } = await import("../src/lib/runs.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const id = await chat.create("default", "Foto");
+  const dataUrl = `data:image/jpeg;base64,${Buffer.from([0xff, 0xd8, 0xff, 0xe0]).toString("base64")}`;
+  await new Promise<void>((resolve) => void chat.send(id, "default", "mirá", [dataUrl, dataUrl], resolve));
+  const run = getRun(id)!;
+  const user = run.stream.items[0];
+  assert.ok(user.kind === "user" && user.images.length === 2);
+  const last = run.stream.items.at(-1)!;
+  assert.ok(last.kind === "assistant" && /Recibí 2 imágenes/.test(last.text), JSON.stringify(last));
+
+  // Not an image: the gateway refuses it and the turn ends with that error.
+  const bad = await chat.create("default", "Mal");
+  await new Promise<void>((resolve) => void chat.send(bad, "default", "x", ["data:image/jpeg;base64,aGVsbG8="], resolve));
+  assert.ok(getRun(bad)!.stream.items.some((i) => i.kind === "notice" && /not an image/.test(i.text)));
+  chat.close();
 });
 
 test("turn errors surface as an error notice", async () => {
@@ -154,7 +239,7 @@ test("DashboardChat: a dropped socket ends the turn with a notice, the next send
   };
 
   let finished = 0;
-  void chat.send(nas.id, "default", "contame algo largo", () => finished++);
+  void chat.send(nas.id, "default", "contame algo largo", [], () => finished++);
   await until(() => getRun(nas.id)?.stream.items.some((i) => i.kind === "assistant" && i.text.length > 0) ?? false);
   (mock as unknown as { dropSockets: () => void }).dropSockets();
   await until(() => finished === 1);
@@ -163,7 +248,7 @@ test("DashboardChat: a dropped socket ends the turn with a notice, the next send
   assert.ok(dropped.stream.items.some((i) => i.kind === "notice" && /Se cortó la conexión/.test(i.text)));
 
   // Same session again: new socket, `session.resume` for a fresh runtime id.
-  await chat.send(nas.id, "default", "hola de nuevo", () => finished++);
+  await chat.send(nas.id, "default", "hola de nuevo", [], () => finished++);
   await until(() => finished === 2);
   const again = getRun(nas.id)!;
   assert.ok(again.stream.items.some((i) => i.kind === "assistant" && /hola de nuevo/.test(i.text)));

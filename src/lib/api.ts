@@ -95,12 +95,18 @@ export interface Job {
   deliver?: string;
   skills?: string[] | null;
   model?: string | null;
+  /** Dashboard: owning profile (the cross-profile list tags every job). */
+  profile?: string;
 }
 
 export interface Skill {
   name: string;
   description?: string;
   category?: string;
+  /** Dashboard only: per-profile on/off switch, use count and origin. */
+  enabled?: boolean;
+  usage?: number;
+  provenance?: "hub" | "bundled" | "external" | "agent" | string;
 }
 
 export interface Toolset {

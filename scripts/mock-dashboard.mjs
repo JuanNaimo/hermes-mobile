@@ -80,6 +80,49 @@ export function startMockDashboard({
   ], 90000);
   sessions.find((s) => s.title === "Plan de la semana").pinned = true;
 
+  // Cron jobs per profile (cron/jobs.json of each profile home).
+  let jobN = 0;
+  const cron = { default: [], "tech-insider": [] };
+  function addJob(profile, fields) {
+    const job = {
+      id: `job_${(++jobN).toString(16).padStart(6, "0")}`, name: "", prompt: "", schedule_display: "",
+      enabled: true, state: "scheduled", paused_at: null, paused_reason: null, deliver: "local",
+      next_run_at: new Date(Date.now() + 3_600_000).toISOString(), last_run_at: null, last_status: null,
+      last_error: null, created_at: new Date().toISOString(), ...fields,
+    };
+    cron[profile].push(job);
+    return job;
+  }
+  addJob("default", { name: "Resumen diario", schedule_display: "0 9 * * *", prompt: "Resumí mis emails y el calendario de hoy.", last_run_at: new Date(Date.now() - 86_400_000).toISOString(), last_status: "ok" });
+  addJob("tech-insider", { name: "Newsletter semanal", schedule_display: "0 8 * * 1", prompt: "Armá el borrador de la newsletter con lo más leído.", enabled: false, state: "paused", paused_at: new Date().toISOString(), next_run_at: null, last_status: "error", last_error: "rss feed timeout" });
+  const annotate = (profile) => (job) => ({ ...job, profile, profile_name: profile, is_default_profile: profile === "default", scheduler_heartbeat_age_s: 3 });
+  function findJob(id, hint) {
+    for (const profile of hint && cron[hint] ? [hint, ...Object.keys(cron)] : Object.keys(cron)) {
+      const job = cron[profile].find((j) => j.id === id);
+      if (job) return { profile, job };
+    }
+    return null;
+  }
+
+  // Skills per profile, with the disabled set from each profile's config.
+  const skillCatalog = {
+    default: [
+      { name: "github-pr-workflow", description: "Abrir, revisar y mergear pull requests.", category: "dev", provenance: "bundled", usage: 14 },
+      { name: "home-assistant", description: "Luces, sensores y escenas de la casa.", category: "home", provenance: "hub", usage: 3 },
+      { name: "nas-maintenance", description: "Chequeos de disco y backups del NAS.", category: "ops", provenance: "agent", usage: 1 },
+    ],
+    "tech-insider": [
+      { name: "arxiv-digest", description: "Resumen de papers nuevos sobre un tema.", category: "research", provenance: "bundled", usage: 22 },
+      { name: "newsletter-draft", description: "Borrador de la newsletter semanal.", category: "writing", provenance: "agent", usage: 6 },
+    ],
+  };
+  const disabledSkills = { default: new Set(["home-assistant"]), "tech-insider": new Set() };
+  const toolsetsFor = (profile) => [
+    { name: "terminal", label: "Terminal", description: "Comandos en el servidor", platform: "cli", enabled: true, available: true, configured: true, tools: ["terminal", "process"] },
+    { name: "web", label: "Web", description: "Búsqueda y navegación", platform: "cli", enabled: true, available: true, configured: profile === "default", tools: ["web_search", "web_extract"] },
+    { name: "image_gen", label: "Imágenes", description: "Generación de imágenes", platform: "cli", enabled: false, available: false, configured: false, tools: ["image_generate"] },
+  ];
+
   // ---------------------------------------------------------------------------
 
   const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
@@ -257,6 +300,60 @@ export function startMockDashboard({
         return json(res, 200, { user_id: user, email: "", display_name: user, org_id: "", provider: "basic", expires_at: 0 });
       }
       if (path === "/api/profiles") return json(res, 200, { profiles });
+
+      // -- cron (web_routers/cron.py) --
+      const knownProfile = (name) => profiles.some((p) => p.name === name);
+      if (path === "/api/cron/jobs" && req.method === "GET") {
+        const profile = q.get("profile") || "all";
+        if (profile !== "all" && !knownProfile(profile)) return detail(res, 404, `Profile '${profile}' does not exist.`);
+        const names = profile === "all" ? Object.keys(cron) : [profile];
+        return json(res, 200, names.flatMap((n) => cron[n].map(annotate(n))));
+      }
+      if (path === "/api/cron/jobs" && req.method === "POST") {
+        const profile = q.get("profile") || "default";
+        if (!knownProfile(profile)) return detail(res, 404, `Profile '${profile}' does not exist.`);
+        const b = await body(req);
+        if (!b?.schedule?.trim()) return json(res, 422, { detail: [{ loc: ["body", "schedule"], msg: "Field required" }] });
+        if (!b.prompt?.trim() && !(b.skills?.length)) return detail(res, 400, "A job needs a prompt or at least one skill");
+        const job = addJob(profile, { name: b.name || b.prompt.slice(0, 40), prompt: b.prompt, schedule_display: b.schedule.trim() });
+        return json(res, 200, annotate(profile)(job));
+      }
+      let cm = path.match(/^\/api\/cron\/jobs\/([^/]+)(?:\/(pause|resume|trigger))?$/);
+      if (cm) {
+        const found = findJob(decodeURIComponent(cm[1]), q.get("profile"));
+        if (!found) return detail(res, 404, "Job not found");
+        const { profile, job } = found;
+        if (req.method === "DELETE" && !cm[2]) {
+          cron[profile].splice(cron[profile].indexOf(job), 1);
+          return json(res, 200, { ok: true });
+        }
+        if (req.method === "POST" && cm[2] === "pause") Object.assign(job, { enabled: false, state: "paused", paused_at: new Date().toISOString(), next_run_at: null });
+        else if (req.method === "POST" && cm[2] === "resume") Object.assign(job, { enabled: true, state: "scheduled", paused_at: null, next_run_at: new Date(Date.now() + 3_600_000).toISOString() });
+        else if (req.method === "POST" && cm[2] === "trigger") Object.assign(job, { last_run_at: new Date().toISOString(), last_status: "ok", last_error: null });
+        else if (req.method !== "GET") return detail(res, 405, "Method Not Allowed");
+        return json(res, 200, annotate(profile)(job));
+      }
+
+      // -- skills / toolsets (web_routers/skills.py, web_routers/tools.py) --
+      if (path === "/api/skills" && req.method === "GET") {
+        const profile = q.get("profile") || "default";
+        if (!knownProfile(profile)) return detail(res, 404, `Profile '${profile}' does not exist.`);
+        return json(res, 200, skillCatalog[profile].map((sk) => ({ ...sk, enabled: !disabledSkills[profile].has(sk.name) })));
+      }
+      if (path === "/api/skills/toggle" && req.method === "PUT") {
+        const b = await body(req);
+        const profile = b?.profile || q.get("profile") || "default";
+        if (!knownProfile(profile)) return detail(res, 404, `Profile '${profile}' does not exist.`);
+        if (typeof b?.name !== "string" || typeof b.enabled !== "boolean") return json(res, 422, { detail: [{ msg: "Field required" }] });
+        if (b.enabled) disabledSkills[profile].delete(b.name);
+        else disabledSkills[profile].add(b.name);
+        return json(res, 200, { ok: true, name: b.name, enabled: b.enabled });
+      }
+      if (path === "/api/tools/toolsets" && req.method === "GET") {
+        const profile = q.get("profile") || "default";
+        if (!knownProfile(profile)) return detail(res, 404, `Profile '${profile}' does not exist.`);
+        return json(res, 200, toolsetsFor(profile));
+      }
       if (path === "/api/profiles/sessions") {
         const profile = q.get("profile") || "all";
         if (profile !== "all" && !profiles.some((p) => p.name === profile)) return detail(res, 404, `Profile not found: ${profile}`);
@@ -395,14 +492,26 @@ export function startMockDashboard({
           if (!s) return fail(4004, "session not live");
           const running = Boolean(s.running);
           s.interrupted = running;
-          if (s.pendingApproval) {
-            const { id: rid, requestId } = s.pendingApproval;
-            event("request.cancel", params.session_id, { id: rid, method: "approval", reason: "interrupted" });
-            event("approval.cancelled", params.session_id, { session_id: params.session_id, stored_session_id: s.stored, reason: "interrupt", cancelled_count: 1, request_ids: [requestId] });
-            asked.get(rid)?.({ result: { choice: "deny" } });
+          if (s.pending) {
+            const { id: rid, method: m, requestId } = s.pending;
+            event("request.cancel", params.session_id, { id: rid, method: m, reason: "interrupted" });
+            if (m === "approval") {
+              event("approval.cancelled", params.session_id, { session_id: params.session_id, stored_session_id: s.stored, reason: "interrupt", cancelled_count: 1, request_ids: [requestId] });
+            }
+            asked.get(rid)?.({ cancelled: true, result: m === "approval" ? { choice: "deny" } : {} });
             asked.delete(rid);
           }
           return reply({ status: running ? "interrupted" : "not_interrupted", interrupted: running });
+        }
+        case "image.attach_bytes": {
+          const s = live.get(params.session_id);
+          if (!s) return fail(4004, "session not live");
+          const bytes = Buffer.from(String(params.content_base64 ?? params.data ?? ""), "base64");
+          const isJpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+          const isPng = bytes[0] === 0x89 && bytes[1] === 0x50;
+          if (!isJpeg && !isPng) return reply({ attached: false, message: "not an image (magic bytes)" });
+          s.images = [...(s.images ?? []), { name: params.filename, bytes: bytes.length }];
+          return reply({ attached: true, name: params.filename, path: `/tmp/hermes/${params.filename}`, count: s.images.length, bytes: bytes.length });
         }
         case "prompt.submit": {
           const s = live.get(params.session_id);
@@ -434,7 +543,9 @@ export function startMockDashboard({
       }
       const rows = messages.get(key);
       const push = (m) => rows.push({ id: rows.length + 1, session_id: s.stored, timestamp: now(), ...m });
-      push({ role: "user", content: text });
+      const images = s.images ?? [];
+      s.images = [];
+      push({ role: "user", content: images.length ? `${text}${text ? "\n" : ""}${images.map(() => "[image]").join(" ")}` : text });
       const stream = async (type, words, delay = 30) => {
         for (const w of words) {
           if (s.interrupted) return false;
@@ -468,23 +579,63 @@ export function startMockDashboard({
       push({ role: "assistant", content: intro, tool_calls: [{ id: callId, type: "function", function: { name: "terminal", arguments: '{"command":"uptime"}' } }] });
       push({ role: "tool", tool_call_id: callId, tool_name: "terminal", content: "21:14 up 12 days, load average: 0.42" });
 
-      if (/pregunt/i.test(text)) {
-        // A request this client does not implement must come back as -32601, not hang.
-        const { answer } = ask("clarify", sid, { questions: [{ qid: "q1", question: "¿Cuál?" }] });
+      // Asks the client and waits; `pending` lets an interrupt withdraw it.
+      const askAndWait = async (method, params, requestId) => {
+        const { id: rid, answer } = ask(method, sid, params);
+        s.pending = { id: rid, method, requestId };
         const res = await answer;
-        event("status.update", sid, { kind: "status", text: res.error?.code === -32601 ? "clarify declined" : "clarify answered" });
+        s.pending = null;
+        return res;
+      };
+      const notes = [];
+
+      if (/vault/i.test(text)) {
+        // Not implemented by the app: must come back as -32601, not hang.
+        const res = await askAndWait("vault.code", { site: "github.com" });
+        event("status.update", sid, { kind: "status", text: res.error?.code === -32601 ? "vault declined" : "vault answered" });
       }
+      if (/pregunt|deploy/i.test(text)) {
+        const res = await askAndWait("clarify", {
+          questions: [
+            { qid: "q1", question: "¿A qué entorno?", choices: ["staging", "prod"], multi_select: false },
+            { qid: "q2", question: "¿Qué servicios reinicio?", choices: ["api", "web", "worker"], multi_select: true },
+          ],
+        });
+        if (s.interrupted) return interrupted(intro);
+        const a = res.result?.answers;
+        if (!a) notes.push("No respondiste las preguntas, así que no hice el deploy.");
+        else {
+          let services = a.q2;
+          try {
+            services = JSON.parse(a.q2).join(", ");
+          } catch {
+            /* free text */
+          }
+          notes.push(`Deploy a **${a.q1 ?? "?"}**; servicios: ${services ?? "ninguno"}.`);
+        }
+      }
+      if (/sudo|reinici/i.test(text)) {
+        const res = await askAndWait("sudo", { command: "sudo systemctl restart nginx" });
+        if (s.interrupted) return interrupted(intro);
+        const value = res.result?.value ?? "";
+        // The real tool never echoes the password; neither does the mock.
+        notes.push(!value ? "Sin contraseña no reinicié nginx." : value === password ? "Reinicié nginx." : "La contraseña de sudo no funcionó.");
+      }
+      if (/token|clave/i.test(text)) {
+        const res = await askAndWait("secret", { env_var: "GITHUB_TOKEN", prompt: "Pegá un token de GitHub con permiso repo.", metadata: { skill: "github-pr-workflow" } });
+        if (s.interrupted) return interrupted(intro);
+        const value = res.result?.value ?? "";
+        notes.push(value ? `Guardé GITHUB_TOKEN (${value.length} caracteres).` : "Seguimos sin token de GitHub.");
+      }
+      if (images.length) notes.push(`Recibí ${images.length} ${images.length === 1 ? "imagen" : "imágenes"}.`);
 
       let approvalNote = "";
       if (/borr|delete|rm /i.test(text)) {
         const requestId = `appr_${++requestN}`;
-        const { id: rid, answer } = ask("approval", sid, {
+        const res = await askAndWait("approval", {
           request_id: requestId, command: "rm -rf /tmp/cache", description: "Comando destructivo detectado",
           choices: ["once", "session", "always", "deny"], tool_name: "terminal",
-        });
-        s.pendingApproval = { id: rid, requestId };
-        const res = await answer;
-        s.pendingApproval = null;
+        }, requestId);
         if (s.interrupted) return interrupted(intro);
         const choice = res.result?.choice ?? "deny";
         const id2 = `call_${++requestN}`;
@@ -498,7 +649,8 @@ export function startMockDashboard({
       if (/falla/i.test(text)) {
         return finish({ text: "", status: "error", error: "El proveedor devolvió 503 (mock)" });
       }
-      const answer = `Listo. Recibí: _"${text}"_.\n\nEl servidor lleva **12 días** encendido.${approvalNote}`;
+      const extra = notes.length ? `\n\n${notes.join("\n\n")}` : "";
+      const answer = `Listo. Recibí: _"${text}"_.\n\nEl servidor lleva **12 días** encendido.${extra}${approvalNote}`;
       if (!(await stream("message.delta", answer.match(/.{1,8}/gs), 25))) return interrupted(answer);
       push({ role: "assistant", content: answer });
       finish({ text: answer, status: "complete" });

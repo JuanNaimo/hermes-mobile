@@ -1,16 +1,28 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Badge, Spinner } from "@/components/ds";
+import { Badge, Spinner, Switch } from "@/components/ds";
 import { Search } from "lucide-react";
 import type { Skill, Toolset } from "@/lib/api";
-import { useClient } from "@/store";
+import { useApp } from "@/store";
 import { cn } from "@/lib/utils";
 import { PageTitle, Panel, SectionLabel } from "@/components/ui";
+import { ProfileChips } from "@/components/ProfileChips";
 import { PageShell } from "./JobsPage";
+
+const PROVENANCE: Record<string, string> = {
+  hub: "del hub",
+  bundled: "incluida",
+  external: "externa",
+  agent: "creada por el agente",
+};
 
 type Tab = "skills" | "toolsets";
 
 export function SkillsPage({ leading }: { leading?: ReactNode }) {
-  const client = useClient();
+  const { client, dashboard, profiles, profileFilter, notify } = useApp();
+  // Skills and toolsets are per profile on the dashboard (there is no "all").
+  const [profile, setProfile] = useState(
+    profileFilter !== "all" ? profileFilter : (profiles.find((p) => p.is_default)?.name ?? "default"),
+  );
   const [tab, setTab] = useState<Tab>("skills");
   const [skills, setSkills] = useState<Skill[] | null>(null);
   const [toolsets, setToolsets] = useState<Toolset[] | null>(null);
@@ -19,11 +31,32 @@ export function SkillsPage({ leading }: { leading?: ReactNode }) {
 
   // Loaded independently: a broken skills listing on the server must not hide the toolsets.
   useEffect(() => {
+    setSkills(null);
+    setToolsets(null);
+    setErrors({});
     const fail = (key: Tab) => (err: unknown) =>
       setErrors((prev) => ({ ...prev, [key]: err instanceof Error ? err.message : String(err) }));
-    client.skills().then(setSkills, fail("skills"));
-    client.toolsets().then(setToolsets, fail("toolsets"));
-  }, [client]);
+    if (dashboard) {
+      dashboard.skills(profile).then(setSkills, fail("skills"));
+      dashboard.toolsets(profile).then(setToolsets, fail("toolsets"));
+    } else if (client) {
+      client.skills().then(setSkills, fail("skills"));
+      client.toolsets().then(setToolsets, fail("toolsets"));
+    }
+  }, [client, dashboard, profile]);
+
+  async function toggleSkill(name: string, enabled: boolean) {
+    if (!dashboard) return;
+    const set = (on: boolean) =>
+      setSkills((prev) => prev?.map((s) => (s.name === name ? { ...s, enabled: on } : s)) ?? prev);
+    set(enabled);
+    try {
+      await dashboard.setSkillEnabled(profile, name, enabled);
+    } catch (err) {
+      set(!enabled);
+      notify(err instanceof Error ? err.message : String(err), "error");
+    }
+  }
 
   const error = errors[tab];
   const loaded = tab === "skills" ? skills : toolsets;
@@ -46,6 +79,15 @@ export function SkillsPage({ leading }: { leading?: ReactNode }) {
   return (
     <PageShell leading={leading}>
       <PageTitle>Capacidades</PageTitle>
+
+      {dashboard && profiles.length > 1 && (
+        <ProfileChips
+          includeAll={false}
+          profiles={profiles.map((p) => p.name)}
+          value={profile}
+          onChange={setProfile}
+        />
+      )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="flex border border-current/20 rounded-[var(--radius-sm)]">
@@ -92,9 +134,28 @@ export function SkillsPage({ leading }: { leading?: ReactNode }) {
             <SectionLabel>{cat}</SectionLabel>
             <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
               {list.map((s) => (
-                <Panel key={s.name} className="p-3.5">
-                  <div className="font-mono text-sm text-midground">{s.name}</div>
-                  {s.description && <p className="mt-1 line-clamp-3 text-xs text-text-secondary">{s.description}</p>}
+                <Panel key={s.name} className={cn("flex gap-3 p-3.5", s.enabled === false && "opacity-70")}>
+                  <div className="min-w-0 flex-1">
+                    <div className="font-mono text-sm text-midground">{s.name}</div>
+                    {s.description && <p className="mt-1 line-clamp-3 text-xs text-text-secondary">{s.description}</p>}
+                    {(s.provenance || s.usage != null) && (
+                      <p className="mt-1.5 text-xs text-text-tertiary">
+                        {[
+                          s.provenance && (PROVENANCE[s.provenance] ?? s.provenance),
+                          s.usage ? `usada ${s.usage} ${s.usage === 1 ? "vez" : "veces"}` : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </p>
+                    )}
+                  </div>
+                  {dashboard && s.enabled !== undefined && (
+                    <Switch
+                      aria-label={`${s.enabled ? "Desactivar" : "Activar"} ${s.name}`}
+                      checked={s.enabled}
+                      onCheckedChange={(on) => void toggleSkill(s.name, on)}
+                    />
+                  )}
                 </Panel>
               ))}
             </div>

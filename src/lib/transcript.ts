@@ -36,7 +36,29 @@ export type ChatItem =
       choices: string[];
       resolved?: string;
     }
+  | {
+      /** The agent asks for input mid-turn (dashboard gateway server→client requests). */
+      kind: "input";
+      key: string;
+      rpcId: string | number;
+      method: "clarify" | "sudo" | "secret";
+      questions?: ClarifyQuestion[];
+      /** sudo: the command that needs the password. */
+      command?: string;
+      /** secret: the env var asked for and the tool's explanation. */
+      envVar?: string;
+      prompt?: string;
+      /** The answer itself is never kept here: secrets must not linger in the transcript. */
+      resolved?: "answered" | "skipped" | "cancelled";
+    }
   | { kind: "notice"; key: string; tone: "error" | "info"; text: string };
+
+export interface ClarifyQuestion {
+  qid: string;
+  question: string;
+  choices?: string[] | null;
+  multi_select?: boolean;
+}
 
 let seq = 0;
 const nextKey = (prefix: string) => `${prefix}-${Date.now().toString(36)}-${(seq++).toString(36)}`;
@@ -251,16 +273,38 @@ export function applyStreamEvent(state: StreamState, name: string, p: StreamPayl
     }
     case "assistant.segment_end":
       return closeSegment(state);
-    case "approval.cancelled": {
+    case "input.request": {
+      const s = closeSegment(state);
+      const method = p.method as "clarify" | "sudo" | "secret";
+      return {
+        ...s,
+        items: [
+          ...s.items,
+          {
+            kind: "input",
+            key: nextKey("in"),
+            rpcId: p.rpc_id as string | number,
+            method,
+            questions: Array.isArray(p.questions) ? (p.questions as ClarifyQuestion[]) : undefined,
+            command: typeof p.command === "string" ? p.command : undefined,
+            envVar: typeof p.env_var === "string" ? p.env_var : undefined,
+            prompt: typeof p.prompt === "string" ? p.prompt : undefined,
+          },
+        ],
+      };
+    }
+    case "request.withdrawn": {
       // Withdrawn by the backend (interrupt, timeout, answered elsewhere): the card stops asking.
       const ids = new Set((Array.isArray(p.request_ids) ? p.request_ids : []).map(String));
       if (p.rpc_id != null) ids.add(`rpc:${p.rpc_id}`);
+      const matches = (requestId: string | undefined, rpcId: string | number | undefined) =>
+        (requestId != null && ids.has(requestId)) || (rpcId != null && ids.has(`rpc:${rpcId}`));
       return {
         ...state,
         items: state.items.map((it) =>
-          it.kind === "approval" &&
+          (it.kind === "approval" || it.kind === "input") &&
           !it.resolved &&
-          ((it.requestId && ids.has(it.requestId)) || (it.rpcId != null && ids.has(`rpc:${it.rpcId}`)))
+          matches(it.kind === "approval" ? it.requestId : undefined, it.rpcId)
             ? { ...it, resolved: "cancelled" }
             : it,
         ),

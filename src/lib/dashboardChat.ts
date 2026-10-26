@@ -1,6 +1,6 @@
 import type { DashboardClient } from "./dashboard.ts";
 import { GatewayClient, type GatewayStatus, type ServerRequest } from "./gateway.ts";
-import { approvalToStream, gatewayEventToStream } from "./gatewayEvents.ts";
+import { gatewayEventToStream, serverRequestToStream } from "./gatewayEvents.ts";
 import { beginRun, endRun, getRun, runEvent } from "./runs.ts";
 import type { SocketFactory } from "./socket.ts";
 
@@ -88,9 +88,19 @@ export class DashboardChat {
     return res.session_id;
   }
 
-  /** Run one turn; resolves when it is accepted, `onFinished` fires when it ends. */
-  async send(storedId: string, profile: string, text: string, onFinished?: () => void): Promise<void> {
-    beginRun(storedId, text, [], {
+  /**
+   * Run one turn; resolves when it is accepted, `onFinished` fires when it ends.
+   * `images` are data URLs; each is queued with `image.attach_bytes` and rides
+   * along with the next `prompt.submit`.
+   */
+  async send(
+    storedId: string,
+    profile: string,
+    text: string,
+    images: string[] = [],
+    onFinished?: () => void,
+  ): Promise<void> {
+    beginRun(storedId, text, images, {
       stop: async () => {
         const rid = this.runtime.get(storedId);
         if (rid) await this.gateway.request("session.interrupt", { session_id: rid, profile });
@@ -104,10 +114,22 @@ export class DashboardChat {
         const rid = this.runtime.get(storedId);
         if (rid) await this.gateway.request("approval.respond", { session_id: rid, profile, choice, request_id: item.requestId });
       },
+      respond: async (item, result) => {
+        this.gateway.respond(item.rpcId, result);
+      },
     });
     this.finishers.set(storedId, () => onFinished?.());
     try {
       const rid = await this.live(storedId, profile);
+      for (const [i, url] of images.entries()) {
+        const res = await this.gateway.request<{ attached?: boolean; message?: string }>("image.attach_bytes", {
+          session_id: rid,
+          profile,
+          content_base64: url.slice(url.indexOf(",") + 1),
+          filename: `imagen-${i + 1}.${/^data:image\/png/.test(url) ? "png" : "jpg"}`,
+        });
+        if (res?.attached === false) throw new Error(res.message || "El servidor no aceptó la imagen");
+      }
       await this.gateway.request("prompt.submit", { session_id: rid, text, profile });
     } catch (err) {
       runEvent(storedId, "error", { message: err instanceof Error ? err.message : String(err) });
@@ -123,7 +145,7 @@ export class DashboardChat {
       this.gateway.respondError(req.id, 4404, "no window here shows this session");
       return;
     }
-    const [name, payload] = approvalToStream(req);
+    const [name, payload] = serverRequestToStream(req);
     runEvent(sid, name, payload);
   }
 

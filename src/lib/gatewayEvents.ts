@@ -56,9 +56,10 @@ export function gatewayEventToStream(event: GatewayEvent): StreamEvent[] {
       return [[looksFailed(p.result) ? "tool.failed" : "tool.completed", { tool_name: String(p.name ?? ""), tool_id: p.tool_id, preview }]];
     }
     case "approval.cancelled":
-      return [["approval.cancelled", { request_ids: p.request_ids }]];
+      return [["request.withdrawn", { request_ids: p.request_ids }]];
     case "request.cancel":
-      return p.method === "approval" ? [["approval.cancelled", { rpc_id: p.id }]] : [];
+      // The backend withdrew a question it asked (approval, clarify, sudo, secret).
+      return [["request.withdrawn", { rpc_id: p.id }]];
     case "message.complete": {
       const content = typeof p.text === "string" ? p.text : stringify(p.text);
       const out: StreamEvent[] = [["assistant.completed", { content }]];
@@ -79,9 +80,22 @@ export function gatewayEventToStream(event: GatewayEvent): StreamEvent[] {
   }
 }
 
-/** The approval card for a server→client `approval` request. */
-export function approvalToStream(req: ServerRequest): StreamEvent {
+/** The chat card for a server→client request (approval, clarify, sudo, secret). */
+export function serverRequestToStream(req: ServerRequest): StreamEvent {
   const p = req.params;
+  if (req.method === "clarify" || req.method === "sudo" || req.method === "secret") {
+    return [
+      "input.request",
+      {
+        rpc_id: req.id,
+        method: req.method,
+        questions: p.questions,
+        command: p.command,
+        env_var: p.env_var,
+        prompt: p.prompt,
+      },
+    ];
+  }
   return [
     "approval.request",
     {

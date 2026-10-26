@@ -89,3 +89,34 @@ test("a revoked refresh token surfaces session_expired", async () => {
   const client = new DashboardClient(base(mock), { ...tokens, accessToken: "stale", refreshToken: "revoked" });
   await assert.rejects(client.profiles(), (err: { code?: string }) => err.code === "session_expired");
 });
+
+test("cron jobs across profiles: list, create in a profile, pause/resume/trigger, delete", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  const all = await client.cronJobs();
+  assert.deepEqual(new Set(all.map((j) => j.profile)), new Set(["default", "tech-insider"]));
+
+  const created = await client.createCronJob("tech-insider", { name: "Prueba", schedule: "every 2h", prompt: "hola" });
+  assert.equal(created.profile, "tech-insider");
+  assert.ok((await client.cronJobs("tech-insider")).some((j) => j.id === created.id));
+  assert.ok(!(await client.cronJobs("default")).some((j) => j.id === created.id));
+
+  assert.equal((await client.cronAction(created.id, "tech-insider", "pause")).state, "paused");
+  assert.equal((await client.cronAction(created.id, "tech-insider", "resume")).enabled, true);
+  assert.ok((await client.cronAction(created.id, undefined, "trigger")).last_run_at, "profile hint optional");
+  await client.deleteCronJob(created.id, "tech-insider");
+  await assert.rejects(client.cronAction(created.id, "tech-insider", "pause"), /Job not found/);
+  await assert.rejects(client.createCronJob("default", { name: "x", schedule: "", prompt: "y" }), /Datos inválidos/);
+});
+
+test("skills per profile with a persistent on/off switch, and toolsets", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  const skills = await client.skills("default");
+  const ha = skills.find((s) => s.name === "home-assistant")!;
+  assert.equal(ha.enabled, false);
+  assert.equal(ha.provenance, "hub");
+  await client.setSkillEnabled("default", "home-assistant", true);
+  assert.equal((await client.skills("default")).find((s) => s.name === "home-assistant")!.enabled, true);
+  assert.ok(!(await client.skills("tech-insider")).some((s) => s.name === "home-assistant"));
+  const toolsets = await client.toolsets("tech-insider");
+  assert.ok(toolsets.some((t) => t.name === "web" && t.configured === false));
+});
