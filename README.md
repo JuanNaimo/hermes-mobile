@@ -54,9 +54,9 @@ Se elige en **Servidor → Apariencia**.
 ## Dos formas de conectarse
 
 - **Usuario (dashboard, `:9119`)**: un solo login con usuario y contraseña que ve **todos
-  los perfiles**, como la app de escritorio. Por ahora muestra perfiles, sesiones e
-  historial (solo lectura); escribir, jobs y skills llegan en los próximos pasos de
-  [`docs/dashboard-migration.md`](docs/dashboard-migration.md).
+  los perfiles**, como la app de escritorio. Perfiles, sesiones, historial y chat (con
+  streaming, herramientas, aprobaciones y detener). Jobs, skills e imágenes adjuntas
+  llegan en el próximo paso de [`docs/dashboard-migration.md`](docs/dashboard-migration.md).
 - **API key (API server, `:8642`)**: el modo original, completo, con una
   `API_SERVER_KEY` por perfil.
 
@@ -76,6 +76,16 @@ origen no puede hacer. Por eso:
 
   Un build estático (`pnpm build` servido desde un hosting) no tiene proxy: ahí usá el
   modo API key.
+
+El chat va por el WebSocket del dashboard (`/api/ws`, JSON-RPC). Ese socket rechaza un
+header `Origin` que no sea la dirección en la que escucha el dashboard, y la WebView manda
+`Origin: http://localhost`. Por eso:
+
+- **En la app** el socket lo abre código nativo (`plugins/native-websocket`: OkHttp en
+  Android, `URLSessionWebSocketTask` en iOS), que no manda `Origin`. No hace falta
+  cambiar cómo escucha el dashboard.
+- **En el navegador** el socket pasa por el mismo proxy de `pnpm dev`, que le saca el
+  `Origin`.
 
 En el server, fijá el secreto del login para que reiniciar Hermes no invalide las
 sesiones abiertas: `HERMES_DASHBOARD_BASIC_AUTH_SECRET` (o `dashboard.basic_auth.secret`).
@@ -155,8 +165,11 @@ Hay un mock para cada modo:
   herramientas y una aprobación (pedile que "borre" algo), además de jobs y skills.
 - `scripts/mock-dashboard.mjs` imita el dashboard: el login nativo con PKCE (cookie,
   código de un solo uso que vence a los 120 s, verificación S256), el refresh de tokens,
-  los perfiles `default` y `tech-insider`, sus sesiones y el historial. También aplica el
-  chequeo de `Host` y el CORS solo-localhost del server real.
+  los perfiles `default` y `tech-insider`, sus sesiones y el historial, y el chat por
+  `/api/ws` (tickets de un uso, streaming con razonamiento y herramientas, una
+  aprobación si le pedís que "borre" algo, un error si el mensaje dice "falla",
+  detener). También aplica el chequeo de `Host`, de `Origin` y el CORS solo-localhost
+  del server real.
 
 ```bash
 pnpm mock              # API server en :8642, API key: dev
@@ -177,10 +190,15 @@ src/
 │   ├── http.ts         # CapacitorHttp en la app nativa, fetch en el navegador
 │   ├── sha256.ts       # SHA-256 para PKCE donde no hay WebCrypto (http:// en la LAN)
 │   ├── connection.ts   # las dos clases de conexión guardada (API key / usuario)
+│   ├── gateway.ts      # cliente JSON-RPC del WebSocket del dashboard (/api/ws)
+│   ├── gatewayEvents.ts# eventos del gateway → el mismo reducer del chat que el SSE
+│   ├── dashboardChat.ts# turnos del modo dashboard (ids guardados ↔ ids de runtime)
+│   ├── socket.ts       # WebSocket nativo (plugin) o del navegador detrás de una interfaz
 │   ├── sse.ts          # parser SSE incremental (el stream es un POST, sin EventSource)
 │   ├── transcript.ts   # historial + eventos SSE → items del chat (reducer puro)
 │   └── runs.ts         # turnos en curso fuera de React (no se cortan al navegar)
 ├── components/         # sidebar, composer, mensajes, markdown, primitivas táctiles
+plugins/native-websocket/  # plugin Capacitor local: WebSocket nativo sin Origin
 ├── pages/              # Conexión, Chat, Jobs, Skills, Servidor
 ├── themes/presets.ts   # paletas del dashboard (Hermes Teal, Midnight, Ember…)
 └── store.tsx           # conexión, ajustes, sesiones

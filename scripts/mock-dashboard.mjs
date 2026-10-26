@@ -16,6 +16,7 @@
  */
 import http from "node:http";
 import { createHash, randomBytes } from "node:crypto";
+import { WebSocketServer } from "ws";
 
 export function startMockDashboard({
   port = Number(process.env.PORT ?? 9119),
@@ -57,6 +58,7 @@ export function startMockDashboard({
       parent_session_id: null, pinned: false, archived: false,
     });
     messages.set(`${profile}/${id}`, msgs.map((m, i) => ({ id: i + 1, session_id: id, timestamp: now() - ago, ...m })));
+    return id;
   }
   addSession("default", "Revisión del NAS", "cli", [
     { role: "user", content: "¿Cómo está el disco del NAS?" },
@@ -246,6 +248,11 @@ export function startMockDashboard({
     if (path.startsWith("/api/")) {
       if (!authed(req)) return detail(res, 401, "Unauthorized");
 
+      if (path === "/api/auth/ws-ticket" && req.method === "POST") {
+        const ticket = token();
+        tickets.set(ticket, now() + 30);
+        return json(res, 200, { ticket, ttl_seconds: 30 });
+      }
       if (path === "/api/auth/me") {
         return json(res, 200, { user_id: user, email: "", display_name: user, org_id: "", provider: "basic", expires_at: 0 });
       }
@@ -276,11 +283,246 @@ export function startMockDashboard({
     detail(res, 404, "Not Found");
   });
 
+  // ---------------------------------------------------------------------------
+  // /api/ws — JSON-RPC 2.0 chat socket (tui_gateway/ws.py).
+
+  /** ws ticket → expiry (single use, 30 s). */
+  const tickets = new Map();
+  /** runtime session id → { profile, stored, ws, interrupted, pendingApproval } */
+  const live = new Map();
+  let runtimeN = 0;
+  let requestN = 0;
+  const wss = new WebSocketServer({ noServer: true });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  function refuse(socket, status, why) {
+    if (log) console.log(`ws upgrade refused (${status}): ${why}`);
+    // The real dashboard closes before accepting: the client sees a failed handshake.
+    socket.write(`HTTP/1.1 ${status} ${status === 403 ? "Forbidden" : "Bad Request"}\r\nConnection: close\r\n\r\n`);
+    socket.destroy();
+  }
+
+  server.on("upgrade", (req, socket, head) => {
+    const url = new URL(req.url, "http://x");
+    if (url.pathname !== "/api/ws") return refuse(socket, 404, `path ${url.pathname}`);
+    const hostOnly = (req.headers.host ?? "").replace(/:\d+$/, "");
+    if (LOOPBACK_HOSTS.has(host) && !LOOPBACK_HOSTS.has(hostOnly)) return refuse(socket, 403, `host ${req.headers.host}`);
+    // An http(s) Origin must name the bound host (port ignored), as in
+    // web_server_boundary._is_accepted_host. The user's dashboard is bound to
+    // its LAN IP, so the WebView's http://localhost fails; native sockets send
+    // no Origin at all.
+    const origin = req.headers.origin;
+    if (origin && /^https?:/i.test(origin)) {
+      const originHost = new URL(origin).hostname.replace(/^\[|\]$/g, "");
+      const accepted =
+        host === "0.0.0.0" || host === "::" ||
+        (LOOPBACK_HOSTS.has(host) ? LOOPBACK_HOSTS.has(originHost) : originHost === host);
+      if (!accepted) return refuse(socket, 403, `origin ${origin}`);
+    }
+    const ticket = url.searchParams.get("ticket");
+    const tok = url.searchParams.get("token");
+    let ok = false;
+    if (ticket && tickets.has(ticket)) {
+      ok = tickets.get(ticket) > now();
+      tickets.delete(ticket); // single use
+    } else if (tok) {
+      const exp = access.get(tok);
+      ok = Boolean(exp && exp > now());
+    }
+    if (!ok) return refuse(socket, 403, ticket ? "ticket unknown, used or expired" : "bad credential");
+    wss.handleUpgrade(req, socket, head, (ws) => onSocket(ws));
+  });
+
+  function onSocket(ws) {
+    const send = (obj) => ws.readyState === 1 && ws.send(JSON.stringify({ jsonrpc: "2.0", ...obj }));
+    const event = (type, sid, payload) => send({ method: "event", params: { type, session_id: sid, payload } });
+    /** Server→client requests waiting for an answer: id → resolve. */
+    const asked = new Map();
+    const ask = (method, sid, params) => {
+      const id = `req_${++requestN}`;
+      // Without `client.capabilities {server_requests: true}` every request fails fast.
+      if (!capabilities) return { id, answer: Promise.resolve({ error: { code: -32601, message: "client takes no requests" } }) };
+      send({ id, method, params: { session_id: sid, ...params } });
+      return { id, answer: new Promise((resolve) => asked.set(id, resolve)) };
+    };
+    let capabilities = false;
+
+    event("gateway.ready", undefined, { skin: {}, change_events: true, heartbeat: true, replay_epoch: "mock" });
+
+    ws.on("message", async (raw) => {
+      let msg;
+      try {
+        msg = JSON.parse(String(raw));
+      } catch {
+        return send({ id: null, error: { code: -32700, message: "parse error" } });
+      }
+      // The client answering one of our requests.
+      if (typeof msg.id === "string" && asked.has(msg.id) && !msg.method) {
+        asked.get(msg.id)(msg);
+        asked.delete(msg.id);
+        return;
+      }
+      const { id, method, params = {} } = msg;
+      const reply = (result) => send({ id, result });
+      const fail = (code, message) => send({ id, error: { code, message } });
+      if (log) console.log("ws ←", method, JSON.stringify(params).slice(0, 120));
+      switch (method) {
+        case "gateway.ping":
+          return reply({ ok: true });
+        case "client.capabilities":
+          capabilities = Boolean(params.server_requests);
+          return reply({ server_requests: ["approval", "clarify", "sudo", "secret"], declines_not_shown: true });
+        case "session.create": {
+          const profile = params.profile || "default";
+          if (!profiles.some((p) => p.name === profile)) return fail(4004, `profile not found: ${profile}`);
+          const rid = `rt_${++runtimeN}`;
+          // The stored row appears with the first prompt, as on the real gateway.
+          const stored = `${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_${(n++).toString(16).padStart(6, "0")}`;
+          live.set(rid, { profile, stored, title: params.title ?? null, ws, created: false });
+          return reply({ session_id: rid, stored_session_id: stored, message_count: 0, messages: [], info: {} });
+        }
+        case "session.resume": {
+          const profile = params.profile || "default";
+          const row = sessions.find((s) => s.id === params.session_id && s.profile === profile);
+          if (!row) return fail(4004, `session not found: ${params.session_id}`);
+          const rid = `rt_${++runtimeN}`;
+          live.set(rid, { profile, stored: row.id, title: row.title, ws, created: true });
+          const count = messages.get(`${profile}/${row.id}`)?.length ?? 0;
+          return reply({ session_id: rid, stored_session_id: row.id, message_count: count, messages: [], messages_omitted: true, info: {} });
+        }
+        case "session.interrupt": {
+          const s = live.get(params.session_id);
+          if (!s) return fail(4004, "session not live");
+          const running = Boolean(s.running);
+          s.interrupted = running;
+          if (s.pendingApproval) {
+            const { id: rid, requestId } = s.pendingApproval;
+            event("request.cancel", params.session_id, { id: rid, method: "approval", reason: "interrupted" });
+            event("approval.cancelled", params.session_id, { session_id: params.session_id, stored_session_id: s.stored, reason: "interrupt", cancelled_count: 1, request_ids: [requestId] });
+            asked.get(rid)?.({ result: { choice: "deny" } });
+            asked.delete(rid);
+          }
+          return reply({ status: running ? "interrupted" : "not_interrupted", interrupted: running });
+        }
+        case "prompt.submit": {
+          const s = live.get(params.session_id);
+          if (!s) return fail(4004, "session not live");
+          if (s.running) return reply({ status: "queued" });
+          const text = typeof params.text === "string" ? params.text : JSON.stringify(params.text);
+          reply({ status: "streaming" });
+          void runTurn(params.session_id, s, text);
+          return;
+        }
+        default:
+          return fail(-32601, `method not found: ${method}`);
+      }
+    });
+
+    async function runTurn(sid, s, text) {
+      s.running = true;
+      s.interrupted = false;
+      const key = `${s.profile}/${s.stored}`;
+      if (!s.created) {
+        s.created = true;
+        sessions.push({
+          id: s.stored, profile: s.profile, title: s.title || text.slice(0, 40), source: "desktop",
+          model: profiles.find((p) => p.name === s.profile).model, started_at: now(), last_active: now(), ended_at: null,
+          message_count: 0, tool_call_count: 0, input_tokens: 0, output_tokens: 0, estimated_cost_usd: 0,
+          preview: text.slice(0, 80), parent_session_id: null, pinned: false, archived: false,
+        });
+        messages.set(key, []);
+      }
+      const rows = messages.get(key);
+      const push = (m) => rows.push({ id: rows.length + 1, session_id: s.stored, timestamp: now(), ...m });
+      push({ role: "user", content: text });
+      const stream = async (type, words, delay = 30) => {
+        for (const w of words) {
+          if (s.interrupted) return false;
+          event(type, sid, { text: w });
+          await sleep(delay);
+        }
+        return true;
+      };
+      const finish = (payload) => {
+        s.running = false;
+        const row = sessions.find((r) => r.id === s.stored && r.profile === s.profile);
+        if (row) {
+          row.last_active = now();
+          row.message_count = rows.length;
+        }
+        event("message.complete", sid, { usage: { input_tokens: 120, output_tokens: 80 }, ...payload });
+      };
+      const interrupted = (partial) => finish({ text: partial, status: "interrupted" });
+
+      event("message.start", sid, {});
+      if (!(await stream("reasoning.delta", "Pienso qué revisar primero… ".split(/(?<= )/), 20))) return interrupted("");
+      const intro = "Dale, lo reviso en el servidor.";
+      if (!(await stream("message.delta", intro.split(/(?<= )/)))) return interrupted(intro);
+      event("message.delta", sid, { text: null });
+
+      const callId = `call_${++requestN}`;
+      event("tool.start", sid, { tool_id: callId, name: "terminal", args: { command: "uptime" } });
+      await sleep(400);
+      if (s.interrupted) return interrupted(intro);
+      event("tool.complete", sid, { tool_id: callId, name: "terminal", args: { command: "uptime" }, duration_s: 0.4, result: { output: "21:14 up 12 days, load average: 0.42", exit_code: 0 }, summary: "up 12 days, load 0.42" });
+      push({ role: "assistant", content: intro, tool_calls: [{ id: callId, type: "function", function: { name: "terminal", arguments: '{"command":"uptime"}' } }] });
+      push({ role: "tool", tool_call_id: callId, tool_name: "terminal", content: "21:14 up 12 days, load average: 0.42" });
+
+      if (/pregunt/i.test(text)) {
+        // A request this client does not implement must come back as -32601, not hang.
+        const { answer } = ask("clarify", sid, { questions: [{ qid: "q1", question: "¿Cuál?" }] });
+        const res = await answer;
+        event("status.update", sid, { kind: "status", text: res.error?.code === -32601 ? "clarify declined" : "clarify answered" });
+      }
+
+      let approvalNote = "";
+      if (/borr|delete|rm /i.test(text)) {
+        const requestId = `appr_${++requestN}`;
+        const { id: rid, answer } = ask("approval", sid, {
+          request_id: requestId, command: "rm -rf /tmp/cache", description: "Comando destructivo detectado",
+          choices: ["once", "session", "always", "deny"], tool_name: "terminal",
+        });
+        s.pendingApproval = { id: rid, requestId };
+        const res = await answer;
+        s.pendingApproval = null;
+        if (s.interrupted) return interrupted(intro);
+        const choice = res.result?.choice ?? "deny";
+        const id2 = `call_${++requestN}`;
+        event("tool.start", sid, { tool_id: id2, name: "terminal", args: { command: "rm -rf /tmp/cache" } });
+        await sleep(200);
+        const blocked = choice === "deny";
+        event("tool.complete", sid, { tool_id: id2, name: "terminal", result: blocked ? { error: "BLOCKED: denied by user" } : { output: "", exit_code: 0 }, summary: blocked ? "BLOCKED: denied by user" : "cache borrada" });
+        approvalNote = blocked ? "\n\nNo borré la cache porque lo denegaste." : "\n\nBorré la cache temporal.";
+      }
+
+      if (/falla/i.test(text)) {
+        return finish({ text: "", status: "error", error: "El proveedor devolvió 503 (mock)" });
+      }
+      const answer = `Listo. Recibí: _"${text}"_.\n\nEl servidor lleva **12 días** encendido.${approvalNote}`;
+      if (!(await stream("message.delta", answer.match(/.{1,8}/gs), 25))) return interrupted(answer);
+      push({ role: "assistant", content: answer });
+      finish({ text: answer, status: "complete" });
+    }
+
+    ws.on("close", () => {
+      for (const [rid, s] of live) if (s.ws === ws) live.delete(rid);
+    });
+  }
+
   return new Promise((resolve) => {
     server.listen(port, host, () => {
       const addr = server.address();
       if (log) console.log(`mock Hermes dashboard on http://${host}:${addr.port} (user: ${user} / pass: ${password})`);
-      resolve({ server, port: addr.port, close: () => new Promise((r) => server.close(r)) });
+      resolve({
+        server,
+        port: addr.port,
+        /** Kill every chat socket without a close frame (Wi-Fi drop, server restart). */
+        dropSockets: () => wss.clients.forEach((c) => c.terminate()),
+        close: () => {
+          wss.clients.forEach((c) => c.terminate());
+          return new Promise((r) => server.close(r));
+        },
+      });
     });
   });
 }

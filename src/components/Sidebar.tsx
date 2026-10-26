@@ -76,8 +76,8 @@ export function Sidebar({
   const showProfile = dashboardMode && profileFilter === "all";
   const rest = filtered.filter((s) => !s.pinned);
 
-  function open(id: string | null) {
-    setActiveSessionId(id);
+  function open(id: string | null, profile?: string) {
+    setActiveSessionId(id, profile);
     setView("chat");
     onNavigate();
   }
@@ -130,20 +130,17 @@ export function Sidebar({
       </nav>
 
       <div className="flex shrink-0 flex-col gap-2 px-3 pt-3 pb-2">
-        {/* New chats need the dashboard's WebSocket (next migration step). */}
-        {!dashboardMode && (
-          <button
-            type="button"
-            onClick={() => open(null)}
-            className={cn(
-              "flex h-12 items-center justify-center gap-2 rounded-[var(--radius-sm)]",
-              "bg-midground text-background-base font-bold text-display text-xs tracking-[0.2em]",
-              "shadow-[inset_-1px_-1px_0_0_#00000080,inset_1px_1px_0_0_#ffffff80] active:invert",
-            )}
-          >
-            <Plus className="size-4" /> Nueva conversación
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => open(null)}
+          className={cn(
+            "flex h-12 items-center justify-center gap-2 rounded-[var(--radius-sm)]",
+            "bg-midground text-background-base font-bold text-display text-xs tracking-[0.2em]",
+            "shadow-[inset_-1px_-1px_0_0_#00000080,inset_1px_1px_0_0_#ffffff80] active:invert",
+          )}
+        >
+          <Plus className="size-4" /> Nueva conversación
+        </button>
         <label className="flex h-11 items-center gap-2 border border-current/15 bg-background/40 px-3 rounded-[var(--radius-sm)] focus-within:border-midground/40">
           <Search className="size-4 shrink-0 text-text-tertiary" />
           <input
@@ -181,7 +178,7 @@ export function Sidebar({
             meta={[relativeTime(s.last_active ?? s.started_at), showProfile ? s.profile : ""].filter(Boolean).join(" · ")}
             active={view === "chat" && s.id === activeSessionId}
             running={running.has(s.id)}
-            onClick={() => open(s.id)}
+            onClick={() => open(s.id, s.profile)}
           />
         ))}
         {rest.length > 0 && <Group label="Recientes" />}
@@ -198,7 +195,7 @@ export function Sidebar({
               .join(" · ")}
             active={view === "chat" && s.id === activeSessionId}
             running={running.has(s.id)}
-            onClick={() => open(s.id)}
+            onClick={() => open(s.id, s.profile)}
           />
         ))}
         {!sessionsLoading && !sessionsError && filtered.length === 0 && (

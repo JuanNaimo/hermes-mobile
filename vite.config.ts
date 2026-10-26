@@ -17,13 +17,19 @@ export default defineConfig(({ command, mode }) => {
       changeOrigin: true,
       ws: true,
       rewrite: (p: string) => p.replace(/^\/hermes-dashboard/, "") || "/",
-      configure: (proxy: { on: (ev: "proxyReq", cb: (req: { removeHeader: (h: string) => void }) => void) => void }) => {
-        // Server-to-server, like the desktop: a LAN Origin (the tablet hitting
-        // this dev server by IP) would fail the dashboard's localhost-only CORS.
-        proxy.on("proxyReq", (req) => {
+      configure: (proxy: {
+        on: (ev: "proxyReq" | "proxyReqWs", cb: (req: { removeHeader: (h: string) => void }) => void) => void;
+      }) => {
+        // Server-to-server, like the desktop and the native socket: a LAN Origin
+        // (the tablet hitting this dev server by IP) fails the dashboard's
+        // localhost-only CORS, and /api/ws refuses any Origin that isn't the
+        // address the dashboard is bound to.
+        const strip = (req: { removeHeader: (h: string) => void }) => {
           req.removeHeader("origin");
           req.removeHeader("referer");
-        });
+        };
+        proxy.on("proxyReq", strip);
+        proxy.on("proxyReqWs", strip);
       },
     },
   };

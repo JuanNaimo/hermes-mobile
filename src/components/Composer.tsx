@@ -23,12 +23,14 @@ export function Composer({
   onSend,
   onStop,
   autoFocus,
+  allowImages = true,
 }: {
   busy: boolean;
   enterSends: boolean;
   onSend: (text: string, images: string[]) => void;
   onStop: () => void;
   autoFocus?: boolean;
+  allowImages?: boolean;
 }) {
   const [text, setText] = useState("");
   const [images, setImages] = useState<string[]>([]);
@@ -104,9 +106,11 @@ export function Composer({
             e.target.value = "";
           }}
         />
-        <IconButton label="Adjuntar imagen" onClick={() => fileRef.current?.click()} disabled={busy}>
-          <ImagePlus />
-        </IconButton>
+        {allowImages && (
+          <IconButton label="Adjuntar imagen" onClick={() => fileRef.current?.click()} disabled={busy}>
+            <ImagePlus />
+          </IconButton>
+        )}
         <textarea
           ref={ref}
           rows={1}
@@ -118,6 +122,7 @@ export function Composer({
           enterKeyHint={enterSends ? "send" : "enter"}
           className={cn(
             "min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-base text-midground",
+            !allowImages && "ps-3",
             "placeholder:text-text-disabled focus:outline-none",
           )}
         />

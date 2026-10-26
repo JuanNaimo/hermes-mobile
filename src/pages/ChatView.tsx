@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Spinner } from "@/components/ds";
-import { ArrowDown, GitBranch, History, Pencil, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { ArrowDown, GitBranch, Pencil, RefreshCw, Sparkles, Trash2, WifiOff } from "lucide-react";
 import { useApp } from "@/store";
 import { ApiError } from "@/lib/api";
 import { historyToItems, type ChatItem } from "@/lib/transcript";
 import { answerApproval, clearRun, getRun, startRun, stopRun, useRunsVersion } from "@/lib/runs";
 import { ApprovalCard, AssistantMessage, Notice, ToolActivity, UserMessage } from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
-import { EmptyState, IconButton } from "@/components/ui";
+import { EmptyState, IconButton, SectionLabel } from "@/components/ui";
+import { cn } from "@/lib/utils";
 
 const SUGGESTIONS = [
   "¿Qué podés hacer en este servidor?",
@@ -19,21 +20,30 @@ const SUGGESTIONS = [
 export function ChatView({ leading }: { leading?: ReactNode }) {
   const {
     client,
+    chat,
+    chatStatus,
     loadMessages,
     activeSessionId,
+    activeProfile,
     setActiveSessionId,
     sessions,
     sessionsLoading,
     refreshSessions,
+    profiles,
+    profileFilter,
     settings,
     notify,
   } = useApp();
-  // Dashboard mode reads history over REST; sending needs its WebSocket,
-  // which is the next step of docs/dashboard-migration.md.
-  const readOnly = !client;
+  // Dashboard mode: history over REST, turns over the gateway socket.
+  const dashboardMode = !client && Boolean(chat);
   useRunsVersion();
   const session = sessions.find((s) => s.id === activeSessionId);
-  const sessionProfile = session?.profile;
+  // A session created here isn't in the list until its first turn is stored.
+  const sessionProfile = session?.profile ?? activeProfile ?? undefined;
+  const defaultProfile =
+    profileFilter !== "all" ? profileFilter : (profiles.find((p) => p.is_default)?.name ?? profiles[0]?.name ?? "default");
+  const [newChatProfile, setNewChatProfile] = useState<string | null>(null);
+  const targetProfile = newChatProfile ?? defaultProfile;
   const run = getRun(activeSessionId);
   const busy = Boolean(run?.busy);
 
@@ -60,7 +70,9 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
         // The server transcript now contains the finished turn.
         clearRun(id);
       } catch (err) {
-        setLoadError(err instanceof Error ? err.message : String(err));
+        // A brand-new dashboard session has no stored row until its first turn lands.
+        if (getRun(id)?.busy) setHistory([]);
+        else setLoadError(err instanceof Error ? err.message : String(err));
       } finally {
         setLoading(false);
       }
@@ -69,7 +81,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   );
 
   // The dashboard needs the owning profile, known once the session list loaded.
-  const waitingForProfile = readOnly && Boolean(activeSessionId) && !session;
+  const waitingForProfile = dashboardMode && Boolean(activeSessionId) && !sessionProfile;
   useEffect(() => {
     setHistory([]);
     setLoadError(null);
@@ -110,6 +122,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
 
   // -- actions ---------------------------------------------------------------
   async function send(text: string, images: string[]) {
+    if (chat && !client) return sendDashboard(chat, text);
     if (!client) return;
     let id = activeSessionId;
     try {
@@ -129,9 +142,39 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     void startRun(client, sessionId, text, images, () => {
       void refreshSessions();
       // Only reload if the person is still looking at this session.
-      if (getActiveId() === sessionId) void loadHistory(sessionId);
+      if (getActiveId() === sessionId && !endedWithNotice(sessionId)) void loadHistory(sessionId);
     });
   }
+
+  async function sendDashboard(dc: NonNullable<typeof chat>, text: string) {
+    let id = activeSessionId;
+    let profile = sessionProfile;
+    try {
+      if (!id) {
+        profile = targetProfile;
+        id = await dc.create(profile, text.replace(/\s+/g, " ").slice(0, 60));
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), "error");
+      return;
+    }
+    if (!profile) return;
+    setPinned(true);
+    const sessionId = id;
+    // `send` registers the live run synchronously, before any await.
+    void dc.send(sessionId, profile, text, () => {
+      void refreshSessions();
+      if (getActiveId() === sessionId && !endedWithNotice(sessionId)) void loadHistory(sessionId, profile);
+    });
+    if (!activeSessionId) setActiveSessionId(sessionId, profile);
+  }
+
+  /**
+   * A stopped or failed turn keeps its live view (partial text + the notice):
+   * the stored transcript has neither, so reloading would erase what happened.
+   * Opening the session again shows the stored history.
+   */
+  const endedWithNotice = (sessionId: string) => getRun(sessionId)?.stream.items.at(-1)?.kind === "notice";
 
   // `activeSessionId` captured by the callback above may be stale.
   const activeRef = useRef(activeSessionId);
@@ -183,7 +226,8 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   }
 
   const title =
-    session?.title || (activeSessionId ? "Sesión" : readOnly ? "Sesiones" : "Nueva conversación");
+    session?.title || (activeSessionId ? "Sesión" : "Nueva conversación");
+  const chatDown = dashboardMode && chatStatus.status === "closed" && chatStatus.detail;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -191,6 +235,9 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
         {leading}
         <div className="min-w-0 flex-1 px-1">
           <h2 className="truncate text-sm font-bold text-midground sm:text-base">{title}</h2>
+          {!session && activeSessionId && sessionProfile && (
+            <p className="truncate font-mono text-xs text-text-tertiary">{sessionProfile}</p>
+          )}
           {session && (
             <p className="truncate font-mono text-xs text-text-tertiary">
               {session.profile && `${session.profile} · `}
@@ -233,20 +280,32 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
             )}
             {loadError && <Notice item={{ kind: "notice", key: "load", tone: "error", text: loadError }} />}
 
-            {readOnly && !activeSessionId && (
-              <div className="pt-[8vh]">
-                <EmptyState icon={<History />} title="Elegí una sesión">
-                  Acá ves el historial de las sesiones de todos tus perfiles. Escribir desde la app con el login del
-                  dashboard llega en el próximo paso; mientras tanto podés usar el modo API key.
-                </EmptyState>
-              </div>
-            )}
-
-            {!readOnly && !activeSessionId && items.length === 0 && (
+            {!activeSessionId && items.length === 0 && (
               <div className="flex flex-col items-center pt-[8vh]">
                 <EmptyState icon={<Sparkles />} title="¿En qué te ayudo?">
                   Hermes tiene acceso a sus herramientas, memoria y skills del servidor.
                 </EmptyState>
+                {dashboardMode && profiles.length > 1 && (
+                  <div className="mb-4 flex flex-wrap items-center justify-center gap-2">
+                    <SectionLabel>Perfil</SectionLabel>
+                    {profiles.map((p) => (
+                      <button
+                        key={p.name}
+                        type="button"
+                        aria-pressed={targetProfile === p.name}
+                        onClick={() => setNewChatProfile(p.name)}
+                        className={cn(
+                          "h-9 border px-3 text-sm transition-colors rounded-[var(--radius-sm)]",
+                          targetProfile === p.name
+                            ? "border-midground bg-midground text-background-base"
+                            : "border-current/20 text-text-secondary hover:text-midground",
+                        )}
+                      >
+                        {p.display_name || p.name}
+                      </button>
+                    ))}
+                  </div>
+                )}
                 <div className="grid w-full max-w-2xl gap-2 sm:grid-cols-2">
                   {SUGGESTIONS.map((s) => (
                     <button
@@ -278,9 +337,8 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
                       key={item.key}
                       item={item}
                       onChoose={(choice) =>
-                        client &&
                         activeSessionId &&
-                        void answerApproval(client, activeSessionId, item.key, choice).catch((err) =>
+                        void answerApproval(activeSessionId, item.key, choice).catch((err) =>
                           notify(err instanceof Error ? err.message : String(err), "error"),
                         )
                       }
@@ -307,20 +365,24 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
 
       <div className="shrink-0 px-3 pt-2 pb-[calc(var(--safe-bottom)+0.75rem)] sm:px-6">
         <div className="mx-auto w-full max-w-3xl">
-          {client ? (
-            <Composer
-              busy={busy}
-              enterSends={settings.enterSends}
-              onSend={(t, imgs) => void send(t, imgs)}
-              onStop={() => activeSessionId && void stopRun(client, activeSessionId)}
-            />
-          ) : (
-            activeSessionId && (
-              <p className="border border-current/15 bg-card/60 px-4 py-3 text-center text-sm text-text-secondary rounded-[var(--radius-lg)]">
-                Solo lectura: con el login del dashboard todavía no se puede escribir desde la app.
-              </p>
-            )
+          {chatDown && (
+            <p className="mb-2 flex items-start gap-2 text-xs text-text-secondary">
+              <WifiOff className="mt-0.5 size-3.5 shrink-0 text-warning" />
+              <span>{chatStatus.detail} Se reconecta al enviar.</span>
+            </p>
           )}
+          <Composer
+            busy={busy}
+            enterSends={settings.enterSends}
+            // The dashboard socket takes text turns; image attachments go through
+            // its file.attach flow, not wired yet.
+            allowImages={!dashboardMode}
+            onSend={(t, imgs) => void send(t, imgs)}
+            onStop={() =>
+              activeSessionId &&
+              void stopRun(activeSessionId).catch((err) => notify(err instanceof Error ? err.message : String(err), "error"))
+            }
+          />
         </div>
       </div>
     </div>

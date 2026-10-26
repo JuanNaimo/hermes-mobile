@@ -10,6 +10,8 @@ import {
 } from "react";
 import { HermesClient, type Message, type Session } from "@/lib/api";
 import { DashboardClient, DashboardError, type DashboardProfile, type DashboardTokens } from "@/lib/dashboard";
+import { DashboardChat } from "@/lib/dashboardChat";
+import type { GatewayStatus } from "@/lib/gateway";
 import { connectionKey, isDashboard, type AnyConnection } from "@/lib/connection";
 import { loadJSON, saveJSON } from "@/lib/utils";
 import { applyTheme, findTheme, type TextSize } from "@/themes/presets";
@@ -43,6 +45,9 @@ interface AppState {
   client: HermesClient | null;
   /** Dashboard mode (:9119). */
   dashboard: DashboardClient | null;
+  /** Dashboard mode: chat over the gateway socket. */
+  chat: DashboardChat | null;
+  chatStatus: { status: GatewayStatus; detail?: string };
   connect: (conn: AnyConnection) => void;
   disconnect: () => void;
   forgetConnection: (conn: AnyConnection) => void;
@@ -66,7 +71,10 @@ interface AppState {
   sessionsError: string | null;
   refreshSessions: () => Promise<void>;
   activeSessionId: string | null;
-  setActiveSessionId: (id: string | null) => void;
+  /** `profile`: dashboard mode, the owning profile (a new session isn't listed yet). */
+  setActiveSessionId: (id: string | null, profile?: string) => void;
+  /** Dashboard mode: profile of the active session, known before the list has it. */
+  activeProfile: string | null;
   /** History of a session through whichever backend is connected. */
   loadMessages: (session: Session | { id: string; profile?: string }) => Promise<Message[]>;
 
@@ -80,6 +88,7 @@ const CONN_KEY = "hermes-mobile:connection";
 const SAVED_KEY = "hermes-mobile:connections";
 const SETTINGS_KEY = "hermes-mobile:settings";
 const ACTIVE_KEY = "hermes-mobile:active-session";
+const ACTIVE_PROFILE_KEY = "hermes-mobile:active-profile";
 const PROFILE_FILTER_KEY = "hermes-mobile:profile-filter";
 
 const sameConn = (a: AnyConnection, b: AnyConnection) => connectionKey(a) === connectionKey(b);
@@ -104,6 +113,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [activeSessionId, setActiveSessionIdState] = useState<string | null>(() =>
     loadJSON<string | null>(ACTIVE_KEY, null),
   );
+  const [activeProfile, setActiveProfile] = useState<string | null>(() => loadJSON(ACTIVE_PROFILE_KEY, null));
+  const [chatStatus, setChatStatus] = useState<{ status: GatewayStatus; detail?: string }>({ status: "idle" });
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -147,11 +158,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, hasAuth]);
 
+  // One gateway socket per login; opened lazily by the first chat call.
+  const chat = useMemo(
+    () => (dashboard ? new DashboardChat(dashboard, { onStatus: (status, detail) => setChatStatus({ status, detail }) }) : null),
+    [dashboard],
+  );
+  useEffect(() => () => chat?.close(), [chat]);
+
   const resetSessions = useCallback(() => {
     setSessions([]);
     setProfiles([]);
     setActiveSessionIdState(null);
+    setActiveProfile(null);
     saveJSON(ACTIVE_KEY, null);
+    saveJSON(ACTIVE_PROFILE_KEY, null);
   }, []);
 
   const connect = useCallback(
@@ -203,9 +223,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const setActiveSessionId = useCallback((id: string | null) => {
+  const setActiveSessionId = useCallback((id: string | null, profile?: string) => {
     setActiveSessionIdState(id);
+    setActiveProfile(profile ?? null);
     saveJSON(ACTIVE_KEY, id);
+    saveJSON(ACTIVE_PROFILE_KEY, profile ?? null);
   }, []);
 
   const setProfileFilter = useCallback((p: string) => {
@@ -281,6 +303,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     savedConnections,
     client,
     dashboard,
+    chat,
+    chatStatus,
     connect,
     disconnect,
     forgetConnection,
@@ -297,6 +321,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     sessionsError,
     refreshSessions,
     activeSessionId,
+    activeProfile,
     setActiveSessionId,
     loadMessages,
     toast,

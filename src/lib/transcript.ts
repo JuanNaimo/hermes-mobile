@@ -21,12 +21,16 @@ export type ChatItem =
       result: string;
       status: "running" | "done" | "failed";
       callId?: string;
+      /** Dashboard gateway's stable `tool_id`, to pair start and completion. */
+      toolId?: string;
     }
   | {
       kind: "approval";
       key: string;
       runId: string;
       requestId?: string;
+      /** Dashboard gateway: the JSON-RPC id of the server→client request to answer. */
+      rpcId?: string | number;
       command: string;
       description: string;
       choices: string[];
@@ -191,6 +195,7 @@ export function applyStreamEvent(state: StreamState, name: string, p: StreamPayl
             args: p.args != null ? stringify(p.args) : String(p.preview ?? ""),
             result: "",
             status: "running",
+            toolId: typeof p.tool_id === "string" ? p.tool_id : undefined,
           },
         ],
       };
@@ -198,10 +203,16 @@ export function applyStreamEvent(state: StreamState, name: string, p: StreamPayl
     case "tool.completed":
     case "tool.failed": {
       const name_ = String(p.tool_name ?? "");
-      // Resolve the most recent running call of that tool.
+      const toolId = typeof p.tool_id === "string" ? p.tool_id : undefined;
+      // By id when the backend gives one, else the most recent running call of that tool.
       const idx = [...state.items]
         .reverse()
-        .findIndex((it) => it.kind === "tool" && it.status === "running" && (!name_ || it.name === name_));
+        .findIndex(
+          (it) =>
+            it.kind === "tool" &&
+            it.status === "running" &&
+            (toolId && it.toolId ? it.toolId === toolId : !name_ || it.name === name_),
+        );
       if (idx === -1) return state;
       const target = state.items[state.items.length - 1 - idx];
       return {
@@ -230,11 +241,29 @@ export function applyStreamEvent(state: StreamState, name: string, p: StreamPayl
             key: nextKey("ap"),
             runId: String(p.run_id ?? s.runId ?? ""),
             requestId,
+            rpcId: p.rpc_id as string | number | undefined,
             command: stringify(p.command),
             description: stringify(p.description ?? p.reason ?? p.pattern_key ?? ""),
             choices,
           },
         ],
+      };
+    }
+    case "assistant.segment_end":
+      return closeSegment(state);
+    case "approval.cancelled": {
+      // Withdrawn by the backend (interrupt, timeout, answered elsewhere): the card stops asking.
+      const ids = new Set((Array.isArray(p.request_ids) ? p.request_ids : []).map(String));
+      if (p.rpc_id != null) ids.add(`rpc:${p.rpc_id}`);
+      return {
+        ...state,
+        items: state.items.map((it) =>
+          it.kind === "approval" &&
+          !it.resolved &&
+          ((it.requestId && ids.has(it.requestId)) || (it.rpcId != null && ids.has(`rpc:${it.rpcId}`)))
+            ? { ...it, resolved: "cancelled" }
+            : it,
+        ),
       };
     }
     case "assistant.completed": {

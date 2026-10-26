@@ -15,7 +15,8 @@ server real desde la PC del usuario.
 
 1. ✅ Login + lista de perfiles + sesiones (REST). **Hecho contra el mock**
    (`scripts/mock-dashboard.mjs`); falta probarlo contra el server real.
-2. Chat por WebSocket JSON-RPC (reemplaza el SSE de `/api/sessions/{id}/chat/stream`).
+2. ✅ Chat por WebSocket JSON-RPC (reemplaza el SSE de `/api/sessions/{id}/chat/stream`).
+   **Hecho contra el mock**; falta probarlo contra el server real y en un APK.
 3. Aprobaciones, stop, skills y jobs vía dashboard.
 4. Mantener el modo API key actual como alternativa en la pantalla de conexión
    hasta que el modo dashboard esté completo.
@@ -103,7 +104,8 @@ proveedores de inferencia, no del dashboard.)
 1. **Origin del WebSocket**: la WebView manda `Origin: http://localhost`, que pasa
    solo si el dashboard está bindeado a `0.0.0.0`/`::` (`web_server_boundary.py`,
    `ws_host_origin_reason`). Opciones: bindear el dashboard a `0.0.0.0`, o abrir el
-   socket desde código nativo sin header `Origin`.
+   socket desde código nativo sin header `Origin`. **Resuelto con la segunda**: plugin
+   local `plugins/native-websocket` (paso 2).
 2. **Secreto fijo**: setear `HERMES_DASHBOARD_BASIC_AUTH_SECRET` (o
    `dashboard.basic_auth.secret`); si no, cada reinicio invalida todos los tokens.
 3. CORS: hardcodeado a `http(s)://(localhost|127.0.0.1)(:puerto)?`. Alcanza para
@@ -124,6 +126,39 @@ proveedores de inferencia, no del dashboard.)
   `http://<ip-lan>:5180` sin WebCrypto (usa el SHA-256 en JS).
 - **Sin probar**: el camino nativo (CapacitorHttp en un APK) y el server real.
   Para el server real desde la PC: `HERMES_DASHBOARD=http://192.168.0.107:9119 pnpm dev`.
-- En modo dashboard el chat queda en solo lectura; Jobs y Skills se ocultan.
+- En modo dashboard Jobs y Skills se ocultan (el chat llegó en el paso 2).
+
+## Estado del paso 2
+
+- Socket nativo: `plugins/native-websocket`, plugin Capacitor local enlazado con
+  `link:` (Capacitor lo detecta y lo registra en Gradle / CocoaPods / SPM). Android:
+  `SocketHub` sobre OkHttp 4.12, sin tipos de Android para poder correrlo en la JVM;
+  `NativeWebSocketPlugin` es solo el puente. iOS: `URLSessionWebSocketTask`. Ninguno
+  manda `Origin`. Eventos `open` / `message` / `close` (siempre el último, con
+  `wasOpen`) / `error` (con el status HTTP si el handshake fue rechazado).
+- Protocolo (`src/lib/gateway.ts`): un objeto JSON por frame; espera `gateway.ready`,
+  manda `client.capabilities {server_requests: true}`; `gateway.ping` cada 25 s (sin
+  respuesta en 10 s → cierra y reconecta en el próximo envío); pedidos servidor→cliente:
+  `approval` va a la tarjeta, el resto responde -32601 como pide el contrato.
+- Auth del socket: ticket de un uso (`POST /api/auth/ws-ticket`, 30 s) para no dejar el
+  access token en la URL; si falla, `?token=`. Si el handshake es rechazado, un segundo
+  intento con el token renovado.
+- Sesiones: la app usa el id guardado (el de REST); `session.create` / `session.resume
+  {omit_messages: true}` dan el id de runtime, que se olvida al reconectar. Una sesión
+  nueva no aparece en `/api/profiles/sessions` hasta que corre el primer turno.
+- Eventos → mismo reducer que el SSE (`src/lib/gatewayEvents.ts`): `message.delta`
+  (`null` = corte de segmento), `reasoning.delta`/`thinking.delta`, `message.interim`,
+  `tool.start`/`tool.complete` (emparejados por `tool_id`), `message.complete`
+  (`complete`/`error`/`interrupted`), `request.cancel`/`approval.cancelled`, `error`.
+- Aprobación: se responde al pedido JSON-RPC (`{choice}`); si la tarjeta no tiene el id,
+  `approval.respond`. Una aprobación para una sesión que la app no muestra se declina
+  con 4404 en vez de responder "deny" por el usuario.
+- Si el socket se corta a mitad de turno, el turno termina con un aviso y la
+  sesión se reanuda en el próximo envío.
+- **Sin probar**: el plugin nativo en un dispositivo (no hay Android SDK ni Xcode acá).
+  `SocketHub` sí corrió en la JVM contra el mock: handshake rechazado → `error` 403 +
+  `close` 1006 `wasOpen=false`; sesión completa con streaming. El Swift no se compiló.
+- Pendiente para el paso 3: imágenes adjuntas (`file.attach`), `clarify`/`sudo`/`secret`,
+  jobs y skills por el dashboard.
 
 Nada de esto fue probado todavía con un token real.

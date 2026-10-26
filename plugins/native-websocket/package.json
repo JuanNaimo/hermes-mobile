@@ -1,0 +1,25 @@
+{
+  "name": "capacitor-native-websocket",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WebSocket opened by native code (OkHttp / URLSession): no CORS and no Origin header, which the Hermes dashboard's /api/ws needs from a WebView.",
+  "license": "MIT",
+  "files": [
+    "android/src/main/",
+    "android/build.gradle",
+    "ios/Sources",
+    "Package.swift",
+    "CapacitorNativeWebsocket.podspec"
+  ],
+  "capacitor": {
+    "android": {
+      "src": "android"
+    },
+    "ios": {
+      "src": "ios"
+    }
+  },
+  "peerDependencies": {
+    "@capacitor/core": ">=7.0.0"
+  }
+}

@@ -168,7 +168,13 @@ export function ApprovalCard({
       )}
       {item.resolved ? (
         <p className="mt-3 text-sm text-text-secondary">
-          Respuesta enviada: <strong className="text-midground">{CHOICE_LABELS[item.resolved] ?? item.resolved}</strong>
+          {item.resolved === "cancelled" ? (
+            "El servidor retiró el pedido (turno detenido o vencido)."
+          ) : (
+            <>
+              Respuesta enviada: <strong className="text-midground">{CHOICE_LABELS[item.resolved] ?? item.resolved}</strong>
+            </>
+          )}
         </p>
       ) : (
         <div className="mt-4 flex flex-wrap gap-2">

@@ -287,6 +287,24 @@ export class DashboardClient {
     return res.data as T;
   }
 
+  /**
+   * Authenticated URL for the chat socket (`/api/ws`). Prefers a single-use
+   * 30 s ticket so the long-lived access token never sits in a URL; falls
+   * back to `?token=`, which the dashboard also accepts. `attempt` 1 means the
+   * first handshake was refused, so the token is refreshed first.
+   */
+  async wsUrl(attempt = 0): Promise<string> {
+    if (attempt > 0) await this.refresh();
+    const origin = dashboardOrigin(this.baseUrl).replace(/^http/, "ws");
+    try {
+      const { ticket } = await this.request<{ ticket?: string }>("/api/auth/ws-ticket", { method: "POST" });
+      if (ticket) return `${origin}/api/ws?ticket=${encodeURIComponent(ticket)}`;
+    } catch {
+      /* older dashboards / bearer not accepted there: use the token */
+    }
+    return `${origin}/api/ws?token=${encodeURIComponent(await this.validToken())}`;
+  }
+
   me() {
     return this.request<{ user_id: string; display_name?: string; email?: string; provider: string }>(
       "/api/auth/me",

@@ -8,7 +8,7 @@
     "build": "tsc --noEmit -p . && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit -p .",
-    "test": "node --experimental-strip-types --test tests/sse.test.ts tests/transcript.test.ts tests/dashboard.test.ts",
+    "test": "node --experimental-strip-types --test tests/sse.test.ts tests/transcript.test.ts tests/dashboard.test.ts tests/gateway.test.ts",
     "mock": "node scripts/mock-server.mjs",
     "cap:android": "pnpm build && cap add android; cap sync android && cap open android",
     "cap:ios": "pnpm build && cap add ios; cap sync ios && cap open ios",
@@ -19,6 +19,7 @@
     "@capacitor/core": "7.4.3",
     "@capacitor/ios": "7.4.3",
     "@nous-research/ui": "0.18.2",
+    "capacitor-native-websocket": "link:plugins/native-websocket",
     "clsx": "2.1.1",
     "lucide-react": "0.577.0",
     "motion": "12.42.2",
@@ -34,10 +35,12 @@
     "@types/node": "22.20.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "6.0.3",
     "tailwindcss": "4.3.3",
     "typescript": "6.0.3",
-    "vite": "8.2.4"
+    "vite": "8.2.4",
+    "ws": "8.18.3"
   },
   "engines": {
     "node": ">=20"
