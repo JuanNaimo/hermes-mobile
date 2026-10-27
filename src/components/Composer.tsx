@@ -1,11 +1,29 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowUp, CornerDownRight, ImagePlus, ListPlus, Mic, Square, X } from "lucide-react";
+import { ArrowUp, CornerDownRight, FileText, ImagePlus, ListPlus, Mic, Paperclip, Square, X } from "lucide-react";
 import { Spinner } from "@/components/ds";
 import { cn } from "@/lib/utils";
 import { startRecording, type Recording } from "@/lib/voice";
+import type { FileAttachment } from "@/lib/runs";
 import { IconButton } from "./ui";
 
 const MAX_IMAGE_EDGE = 1600;
+/** Files travel base64-encoded over the chat socket; keep them to a size a phone can push. */
+const MAX_FILE_BYTES = 20 * 1024 * 1024;
+
+function readAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error ?? new Error(`No se pudo leer ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
 
 /** Downscale a picked photo so it travels as a reasonable data URL. */
 async function fileToDataUrl(file: File): Promise<string> {
@@ -26,6 +44,7 @@ export function Composer({
   onStop,
   autoFocus,
   allowImages = true,
+  allowFiles = false,
   onTranscribe,
   onError,
   toolbar,
@@ -36,10 +55,12 @@ export function Composer({
 }: {
   busy: boolean;
   enterSends: boolean;
-  onSend: (text: string, images: string[]) => void;
+  onSend: (text: string, images: string[], files: FileAttachment[]) => void;
   onStop: () => void;
   autoFocus?: boolean;
   allowImages?: boolean;
+  /** Any file besides images (PDF, text, spreadsheets…): the dashboard stores them in the session. */
+  allowFiles?: boolean;
   /** Turns a recorded clip into text; without it there is no mic button. */
   onTranscribe?: (clip: Blob) => Promise<string>;
   onError?: (message: string) => void;
@@ -50,13 +71,14 @@ export function Composer({
   /** Completions for a `/command` draft; without it there is no autocomplete. */
   onSlashComplete?: (text: string) => Promise<{ items: SlashSuggestion[]; replaceFrom: number }>;
   /** While busy: keep the message for after the running turn (Enter does this). */
-  onQueue?: (text: string, images: string[]) => void;
+  onQueue?: (text: string, images: string[], files: FileAttachment[]) => void;
   /** While busy: send the text into the running turn as a correction. */
   onSteer?: (text: string) => void;
 }) {
   const [text, setText] = useState("");
   const [suggestions, setSuggestions] = useState<{ items: SlashSuggestion[]; replaceFrom: number } | null>(null);
   const [images, setImages] = useState<string[]>([]);
+  const [files, setFiles] = useState<FileAttachment[]>([]);
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [voice, setVoice] = useState<"idle" | "starting" | "recording" | "transcribing">("idle");
@@ -141,23 +163,24 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [text]);
 
-  const hasDraft = text.trim().length > 0 || images.length > 0;
+  const hasDraft = text.trim().length > 0 || images.length > 0 || files.length > 0;
   const canSend = !busy && hasDraft;
   const canQueue = busy && hasDraft && Boolean(onQueue);
-  const canSteer = busy && Boolean(onSteer) && text.trim().length > 0 && images.length === 0;
+  const canSteer = busy && Boolean(onSteer) && text.trim().length > 0 && images.length === 0 && files.length === 0;
 
   function clear() {
     setText("");
     setImages([]);
+    setFiles([]);
   }
 
   function submit() {
     if (canQueue) {
-      onQueue!(text.trim(), images);
+      onQueue!(text.trim(), images, files);
       return clear();
     }
     if (!canSend) return;
-    onSend(text.trim(), images);
+    onSend(text.trim(), images, files);
     clear();
   }
 
@@ -176,10 +199,26 @@ export function Composer({
     }
   }
 
-  async function onPick(files: FileList | null) {
-    if (!files?.length) return;
-    const urls = await Promise.all([...files].slice(0, 4).map(fileToDataUrl));
-    setImages((prev) => [...prev, ...urls].slice(0, 4));
+  async function onPick(picked: FileList | null) {
+    if (!picked?.length) return;
+    const all = [...picked];
+    const isImage = (f: File) => /^image\/(png|jpe?g|webp|gif|heic|heif)$/i.test(f.type);
+    try {
+      const urls = await Promise.all(all.filter((f) => allowImages && isImage(f)).slice(0, 4).map(fileToDataUrl));
+      if (urls.length) setImages((prev) => [...prev, ...urls].slice(0, 4));
+      if (!allowFiles) return;
+      const others = all.filter((f) => !(allowImages && isImage(f)));
+      const tooBig = others.filter((f) => f.size > MAX_FILE_BYTES);
+      if (tooBig.length) onError?.(`${tooBig.map((f) => f.name).join(", ")}: el límite es ${formatBytes(MAX_FILE_BYTES)} por archivo.`);
+      const read = await Promise.all(
+        others
+          .filter((f) => f.size <= MAX_FILE_BYTES)
+          .map(async (f) => ({ name: f.name, size: f.size, dataUrl: await readAsDataUrl(f) })),
+      );
+      if (read.length) setFiles((prev) => [...prev, ...read].slice(0, 8));
+    } catch (err) {
+      onError?.(err instanceof Error ? err.message : String(err));
+    }
   }
 
   return (
@@ -212,6 +251,28 @@ export function Composer({
           ))}
         </ul>
       )}
+      {files.length > 0 && (
+        <ul aria-label="Archivos adjuntos" className="flex flex-wrap gap-2 px-3 pt-3">
+          {files.map((f, i) => (
+            <li
+              key={`${f.name}-${i}`}
+              className="flex min-h-9 max-w-full items-center gap-2 border border-current/20 ps-2.5 text-sm text-midground rounded-[var(--radius-sm)]"
+            >
+              <FileText className="size-4 shrink-0 text-text-secondary" />
+              <span className="min-w-0 truncate">{f.name}</span>
+              <span className="shrink-0 font-mono text-xs text-text-tertiary">{formatBytes(f.size)}</span>
+              <button
+                type="button"
+                aria-label={`Quitar ${f.name}`}
+                onClick={() => setFiles((prev) => prev.filter((_, j) => j !== i))}
+                className="inline-flex size-9 shrink-0 items-center justify-center text-text-tertiary hover:text-midground"
+              >
+                <X className="size-3.5" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {images.length > 0 && (
         <div className="flex gap-2 overflow-x-auto px-3 pt-3 scrollbar-none">
           {images.map((src, i) => (
@@ -233,7 +294,7 @@ export function Composer({
         <input
           ref={fileRef}
           type="file"
-          accept="image/*"
+          accept={allowFiles ? undefined : "image/*"}
           multiple
           hidden
           onChange={(e) => {
@@ -241,9 +302,13 @@ export function Composer({
             e.target.value = "";
           }}
         />
-        {allowImages && (
-          <IconButton label="Adjuntar imagen" onClick={() => fileRef.current?.click()} disabled={busy && !onQueue}>
-            <ImagePlus />
+        {(allowImages || allowFiles) && (
+          <IconButton
+            label={allowFiles ? "Adjuntar archivo o imagen" : "Adjuntar imagen"}
+            onClick={() => fileRef.current?.click()}
+            disabled={busy && !onQueue}
+          >
+            {allowFiles ? <Paperclip /> : <ImagePlus />}
           </IconButton>
         )}
         <textarea
@@ -265,7 +330,7 @@ export function Composer({
           enterKeyHint={enterSends ? "send" : "enter"}
           className={cn(
             "min-h-11 flex-1 resize-none bg-transparent px-1 py-2.5 text-base text-midground",
-            !allowImages && "ps-3",
+            !allowImages && !allowFiles && "ps-3",
             "placeholder:text-text-disabled focus:outline-none",
           )}
         />

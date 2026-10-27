@@ -5,7 +5,18 @@ import { contentImages, contentText, type Message, type StreamPayload } from "./
  * `/api/sessions/{id}/messages` and live SSE events both reduce into it.
  */
 export type ChatItem =
-  | { kind: "user"; key: string; text: string; images: string[]; /** A correction sent into a running turn. */ steer?: boolean }
+  | {
+      kind: "user";
+      key: string;
+      text: string;
+      images: string[];
+      /** Names of attached files (their `@file:` refs are kept out of `text`). */
+      files?: string[];
+      /** Those refs as sent, so a retry can point at the same files again. */
+      fileRefs?: string[];
+      /** A correction sent into a running turn. */
+      steer?: boolean;
+    }
   | {
       kind: "assistant";
       key: string;
@@ -83,6 +94,26 @@ function prettyArgs(raw: unknown): string {
   }
 }
 
+/** `@file:path` (optionally quoted) on its own line: how the gateway references an attached file. */
+const FILE_REF_LINE = /^@file:(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\S+))\s*$/;
+
+/** Split the leading `@file:` lines off a user message: what the person wrote, and the files' names. */
+export function splitFileRefs(text: string): { text: string; files: string[]; refs: string[] } {
+  const lines = text.split("\n");
+  const files: string[] = [];
+  const refs: string[] = [];
+  let i = 0;
+  for (; i < lines.length; i++) {
+    const m = FILE_REF_LINE.exec(lines[i].trim());
+    if (!m) break;
+    const path = m[1] ?? m[2] ?? m[3] ?? m[4];
+    files.push(path.split("/").pop() || path);
+    refs.push(lines[i].trim());
+  }
+  if (!files.length) return { text, files, refs };
+  return { text: lines.slice(i).join("\n").trim(), files, refs };
+}
+
 export function historyToItems(messages: Message[]): ChatItem[] {
   const items: ChatItem[] = [];
   const toolByCallId = new Map<string, Extract<ChatItem, { kind: "tool" }>>();
@@ -90,9 +121,11 @@ export function historyToItems(messages: Message[]): ChatItem[] {
   for (const m of messages) {
     const key = `h-${m.id ?? nextKey("m")}`;
     if (m.role === "user") {
-      const text = contentText(m.content);
+      const { text, files, refs } = splitFileRefs(contentText(m.content));
       const images = contentImages(m.content);
-      if (text || images.length) items.push({ kind: "user", key, text, images });
+      if (text || images.length || files.length) {
+        items.push({ kind: "user", key, text, images, ...(files.length ? { files, fileRefs: refs } : {}) });
+      }
     } else if (m.role === "assistant") {
       const text = contentText(m.content);
       const reasoning = m.reasoning_content || m.reasoning || "";
@@ -386,6 +419,6 @@ export function settle(state: StreamState): StreamState {
   };
 }
 
-export function userItem(text: string, images: string[]): ChatItem {
-  return { kind: "user", key: nextKey("u"), text, images };
+export function userItem(text: string, images: string[], files: string[] = []): ChatItem {
+  return { kind: "user", key: nextKey("u"), text, images, ...(files.length ? { files } : {}) };
 }

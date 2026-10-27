@@ -426,6 +426,37 @@ test("DashboardChat: a turn the server starts on its own (its queue) is followed
   chat.close();
 });
 
+test("DashboardChat: files ride file.attach and the prompt points at them; a retry points at them again", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getRun } = await import("../src/lib/runs.ts");
+  const { historyToItems } = await import("../src/lib/transcript.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const id = await chat.create("default", "Archivos");
+  const pdf = `data:application/pdf;base64,${Buffer.from("%PDF-1.7 informe").toString("base64")}`;
+  const txt = `data:text/plain;base64,${Buffer.from("hola").toString("base64")}`;
+  const files = [
+    { name: "informe.pdf", dataUrl: pdf, size: 16 },
+    { name: "mis notas.txt", dataUrl: txt, size: 4 },
+  ];
+  await new Promise<void>((resolve) => void chat.send(id, "default", "resumilos", [], resolve, { files }));
+  const run = getRun(id)!;
+  assert.deepEqual(run.stream.items[0].kind === "user" && run.stream.items[0].files, ["informe.pdf", "mis notas.txt"]);
+  const text = assistantText(run.stream.items);
+  assert.match(text, /Leí \*\*informe\.pdf\*\* \(16 bytes, PDF\)/);
+  assert.match(text, /Leí \*\*mis notas\.txt\*\* \(4 bytes\)/);
+  assert.match(text, /Recibí: _"resumilos"_/);
+
+  const stored = historyToItems(await dash.messages(id, "default"));
+  const user = stored.find((i) => i.kind === "user");
+  assert.ok(user?.kind === "user" && user.text === "resumilos");
+  assert.deepEqual(user.files, ["informe.pdf", "mis notas.txt"]);
+
+  await new Promise<void>((resolve) => void chat.retry(id, "default", "solo el PDF", resolve, undefined, user.fileRefs));
+  assert.match(assistantText(getRun(id)!.stream.items), /Leí \*\*informe\.pdf\*\*/);
+  assert.deepEqual(getRun(id)!.stream.items[0].kind === "user" && getRun(id)!.stream.items[0].files, ["informe.pdf", "mis notas.txt"]);
+  chat.close();
+});
+
 test("DashboardChat: model, effort, fast and yolo per session, with live info and a confirm for expensive models", async () => {
   const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
   const { getLive } = await import("../src/lib/sessionLive.ts");

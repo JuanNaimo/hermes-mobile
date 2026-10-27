@@ -7,6 +7,7 @@ import {
   ChevronRight,
   Copy,
   CornerDownRight,
+  FileText,
   Pencil,
   RotateCcw,
   Info,
@@ -59,6 +60,19 @@ export const UserMessage = memo(function UserMessage({
               />
             ))}
           </div>
+        )}
+        {item.files && item.files.length > 0 && (
+          <ul aria-label="Archivos" className={cn("flex flex-wrap gap-1.5", item.text && "mb-2")}>
+            {item.files.map((name, i) => (
+              <li
+                key={`${name}-${i}`}
+                className="flex max-w-full items-center gap-1.5 border border-current/20 px-2 py-1 text-sm rounded-[var(--radius-sm)]"
+              >
+                <FileText className="size-4 shrink-0 text-text-secondary" />
+                <span className="min-w-0 truncate">{name}</span>
+              </li>
+            ))}
+          </ul>
         )}
         {item.text && <p className="whitespace-pre-wrap break-words">{item.text}</p>}
       </div>

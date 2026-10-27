@@ -4,7 +4,19 @@ import { ArrowDown, Ellipsis, GitBranch, Pencil, RefreshCw, Sparkles, Trash2, Wi
 import { useApp } from "@/store";
 import { ApiError } from "@/lib/api";
 import { historyToItems, type ChatItem } from "@/lib/transcript";
-import { answerApproval, answerInput, clearRun, dropQueued, enqueue, getQueue, getRun, startRun, stopRun, useRunsVersion } from "@/lib/runs";
+import {
+  answerApproval,
+  answerInput,
+  clearRun,
+  dropQueued,
+  enqueue,
+  getQueue,
+  getRun,
+  startRun,
+  stopRun,
+  useRunsVersion,
+  type FileAttachment,
+} from "@/lib/runs";
 import { ApprovalCard, AssistantMessage, InputCard, Notice, ToolActivity, UserMessage } from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
 import { SessionControls } from "@/components/SessionControls";
@@ -179,8 +191,8 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   useEffect(() => stopSpeaking, [activeSessionId]);
 
   // -- actions ---------------------------------------------------------------
-  async function send(text: string, images: string[]) {
-    if (chat && !client) return sendDashboard(chat, text, images);
+  async function send(text: string, images: string[], files: FileAttachment[] = []) {
+    if (chat && !client) return sendDashboard(chat, text, images, files);
     if (!client) return;
     let id = activeSessionId;
     try {
@@ -204,15 +216,16 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     });
   }
 
-  async function sendDashboard(dc: NonNullable<typeof chat>, text: string, images: string[]) {
+  async function sendDashboard(dc: NonNullable<typeof chat>, text: string, images: string[], files: FileAttachment[] = []) {
     if (editing) return retryLast(text);
     let id = activeSessionId;
     let profile = sessionProfile;
-    const slash = images.length === 0 && /^\/\S/.test(text);
+    const slash = images.length === 0 && files.length === 0 && /^\/\S/.test(text);
     try {
       if (!id) {
         profile = targetProfile;
-        id = await dc.create(profile, slash ? undefined : (text || "Imagen").replace(/\s+/g, " ").slice(0, 60), newChatOptions);
+        const title = text || files[0]?.name || "Imagen";
+        id = await dc.create(profile, slash ? undefined : title.replace(/\s+/g, " ").slice(0, 60), newChatOptions);
         setNewChatOptions({});
         if (slash) setActiveSessionId(id, profile);
       }
@@ -227,7 +240,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     // `send` registers the live run synchronously, before any await.
     stopSpeaking();
     // Its end is handled by the `onRunEnded` listener above.
-    void dc.send(sessionId, profile, text, images);
+    void dc.send(sessionId, profile, text, images, undefined, { files });
     if (!activeSessionId) setActiveSessionId(sessionId, profile);
   }
 
@@ -278,6 +291,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
       text ?? item.text,
       undefined,
       Number.isFinite(rowId) ? rowId : undefined,
+      item.fileRefs,
     );
   }
 
@@ -393,7 +407,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     const item = queue.find((q) => q.key === key);
     if (!item || !activeSessionId || !chat) return;
     dropQueued(activeSessionId, key);
-    void sendDashboard(chat, item.text, item.images);
+    void sendDashboard(chat, item.text, item.images, item.files);
   }
 
   async function rename() {
@@ -672,8 +686,9 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
               ) : undefined
             }
             enterSends={settings.enterSends}
-            onSend={(t, imgs) => void send(t, imgs)}
-            onQueue={dashboardMode && activeSessionId ? (t, imgs) => enqueue(activeSessionId, t, imgs) : undefined}
+            onSend={(t, imgs, files) => void send(t, imgs, files)}
+            allowFiles={dashboardMode}
+            onQueue={dashboardMode && activeSessionId ? (t, imgs, files) => enqueue(activeSessionId, t, imgs, files) : undefined}
             onSteer={dashboardMode && activeSessionId ? (t) => void steer(t) : undefined}
             onTranscribe={dashboardMode ? transcribe : undefined}
             onError={(message) => notify(message, "error")}

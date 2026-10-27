@@ -1,8 +1,9 @@
 import type { DashboardClient } from "./dashboard.ts";
 import { GatewayClient, GatewayError, type GatewayEvent, type GatewayStatus, type ServerRequest } from "./gateway.ts";
 import { gatewayEventToStream, serverRequestToStream } from "./gatewayEvents.ts";
+import { splitFileRefs } from "./transcript.ts";
 import { normalizeModelOptions, type ModelOptions } from "./models.ts";
-import { beginRun, endRun, getRun, resetRunOutput, runEvent, takeQueued, type RunControls } from "./runs.ts";
+import { beginRun, endRun, getRun, resetRunOutput, runEvent, takeQueued, type FileAttachment, type RunControls } from "./runs.ts";
 import { adoptFences, forgetFences, getLive, mergeInfo, setTodos, setUsage } from "./sessionLive.ts";
 import type { SocketFactory } from "./socket.ts";
 
@@ -281,7 +282,7 @@ export class DashboardChat {
     const run = getRun(storedId);
     if (run?.busy || run?.stream.items.at(-1)?.kind === "notice") return;
     const next = takeQueued(storedId);
-    if (next) void this.send(storedId, profile, next.text, next.images);
+    if (next) void this.send(storedId, profile, next.text, next.images, undefined, { files: next.files });
   }
 
   /** Every turn's end, whoever started it (this app, the queue, another device). */
@@ -375,13 +376,21 @@ export class DashboardChat {
     text: string,
     images: string[] = [],
     onFinished?: () => void,
-    before?: (runtimeId: string) => Promise<void>,
+    opts: {
+      before?: (runtimeId: string) => Promise<void>;
+      /** New files to upload with this message. */
+      files?: FileAttachment[];
+      /** `@file:` refs to files already on the server (a retry). */
+      fileRefs?: string[];
+    } = {},
   ): Promise<void> {
-    beginRun(storedId, text, images, this.controls(storedId, profile));
+    const files = opts.files ?? [];
+    const names = [...splitFileRefs((opts.fileRefs ?? []).join("\n")).files, ...files.map((f) => f.name)];
+    beginRun(storedId, text, images, this.controls(storedId, profile), { files: names });
     this.finishers.set(storedId, () => onFinished?.());
     try {
       const rid = await this.attach(storedId, profile);
-      await before?.(rid);
+      await opts.before?.(rid);
       for (const [i, url] of images.entries()) {
         const res = await this.gateway.request<{ attached?: boolean; message?: string }>("image.attach_bytes", {
           session_id: rid,
@@ -391,7 +400,20 @@ export class DashboardChat {
         });
         if (res?.attached === false) throw new Error(res.message || "El servidor no aceptó la imagen");
       }
-      await this.gateway.request("prompt.submit", { session_id: rid, text, profile });
+      // Files land in the session's workspace; the prompt points the agent at them.
+      const refs = [...(opts.fileRefs ?? [])];
+      for (const file of files) {
+        const res = await this.gateway.request<{ attached?: boolean; ref_text?: string; message?: string }>("file.attach", {
+          session_id: rid,
+          profile,
+          name: file.name,
+          data_url: file.dataUrl,
+        });
+        if (!res?.attached || !res.ref_text) throw new Error(res?.message || `El servidor no aceptó ${file.name}`);
+        refs.push(res.ref_text);
+      }
+      const prompt = [refs.join("\n"), text].filter(Boolean).join("\n\n");
+      await this.gateway.request("prompt.submit", { session_id: rid, text: prompt, profile });
     } catch (err) {
       runEvent(storedId, "error", { message: err instanceof Error ? err.message : String(err) });
       this.finish(storedId);
@@ -422,15 +444,23 @@ export class DashboardChat {
    * Run the last user turn again: drop it (and its reply) from the session,
    * then send `text` (the same words, or edited ones) in its place.
    */
-  async retry(storedId: string, profile: string, text: string, onFinished?: () => void, lastUserRowId?: number) {
-    await this.send(storedId, profile, text, [], onFinished, async (rid) => {
+  async retry(
+    storedId: string,
+    profile: string,
+    text: string,
+    onFinished?: () => void,
+    lastUserRowId?: number,
+    fileRefs?: string[],
+  ) {
+    const before = async (rid: string) => {
       if (this.gateway.sessionAuthority) {
         if (lastUserRowId == null) throw new Error("No se encontró el mensaje a reintentar; recargá la sesión.");
         await this.mutate(storedId, profile, "rewind", { target_message_id: lastUserRowId });
       } else {
         await this.gateway.request("session.undo", { session_id: rid, profile, intent: "retry" });
       }
-    });
+    };
+    await this.send(storedId, profile, text, [], onFinished, { before, fileRefs });
   }
 
   // -- session settings ----------------------------------------------------------

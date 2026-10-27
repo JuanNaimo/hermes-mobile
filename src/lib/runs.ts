@@ -70,10 +70,18 @@ export function useRunsVersion(): number {
 
 // -- messages written while a turn runs, sent one by one after it --------------
 
+/** A non-image file picked in the composer, read as a data URL. */
+export interface FileAttachment {
+  name: string;
+  dataUrl: string;
+  size: number;
+}
+
 export interface Queued {
   key: string;
   text: string;
   images: string[];
+  files: FileAttachment[];
 }
 
 const queues = new Map<string, Queued[]>();
@@ -83,8 +91,8 @@ export function getQueue(sessionId: string | null): Queued[] {
   return (sessionId && queues.get(sessionId)) || [];
 }
 
-export function enqueue(sessionId: string, text: string, images: string[]): Queued {
-  const item = { key: `q${++queuedN}`, text, images };
+export function enqueue(sessionId: string, text: string, images: string[], files: FileAttachment[] = []): Queued {
+  const item = { key: `q${++queuedN}`, text, images, files };
   queues.set(sessionId, [...getQueue(sessionId), item]);
   emit();
   return item;
@@ -112,9 +120,10 @@ export function beginRun(
   text: string,
   images: string[],
   controls: RunControls,
-  opts: { resumed?: boolean } = {},
+  opts: { resumed?: boolean; files?: string[] } = {},
 ) {
-  const items: ChatItem[] = text || images.length ? [userItem(text, images)] : [];
+  const files = opts.files ?? [];
+  const items: ChatItem[] = text || images.length || files.length ? [userItem(text, images, files)] : [];
   set(sessionId, { stream: { items, finished: false }, busy: true, controls, resumed: opts.resumed });
 }
 

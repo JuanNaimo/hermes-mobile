@@ -805,6 +805,22 @@ export function startMockDashboard({
           s.images = [...(s.images ?? []), { name: params.filename, bytes: bytes.length }];
           return reply({ attached: true, name: params.filename, path: `/tmp/hermes/${params.filename}`, count: s.images.length, bytes: bytes.length });
         }
+        case "file.attach": {
+          const s = live.get(params.session_id);
+          if (!s) return fail(4004, "session not live");
+          const m = /^data:[^;,]*(?:;[^;,=]+=[^;,]+)*;base64,(.*)$/is.exec(String(params.data_url ?? ""));
+          if (!params.path && !m) return fail(4015, "path or data_url required");
+          if (!m) return fail(5028, "file not found on gateway and no data_url provided");
+          const bytes = Buffer.from(m[1], "base64");
+          // _sanitize_attachment_name + a numbered copy on a clash, like prompt_attachments.py.
+          let name = String(params.name || "attachment").replace(/[\\/]/g, "_").replace(/^\.+/, "") || "attachment";
+          s.files = s.files ?? new Map();
+          for (let n = 2; s.files.has(name); n++) name = name.replace(/(-\d+)?(\.[^.]*)?$/, (_, _n, ext = "") => `-${n}${ext}`);
+          s.files.set(name, bytes);
+          const ref = `attachments/${name}`;
+          const quoted = /[\s()[\]{}"'`]/.test(ref) ? `"${ref}"` : ref;
+          return reply({ attached: true, name, path: `/home/hermes/${ref}`, ref_path: ref, ref_text: `@file:${quoted}`, uploaded: true });
+        }
         case "prompt.submit": {
           const s = live.get(params.session_id);
           if (!s) return fail(4004, "session not live");
@@ -1038,6 +1054,15 @@ export function startMockDashboard({
         notes.push(value ? `Guardé GITHUB_TOKEN (${value.length} caracteres).` : "Seguimos sin token de GitHub.");
       }
       if (images.length) notes.push(`Recibí ${images.length} ${images.length === 1 ? "imagen" : "imágenes"}.`);
+      for (const [, quotedRef, plainRef] of text.matchAll(/^@file:(?:"([^"]+)"|(\S+))$/gm)) {
+        const name = (quotedRef ?? plainRef).split("/").pop();
+        const bytes = s.files?.get(name);
+        if (!bytes) notes.push(`No encontré ${name}.`);
+        else {
+          const pdf = bytes.subarray(0, 5).toString("latin1") === "%PDF-";
+          notes.push(`Leí **${name}** (${bytes.length} bytes${pdf ? ", PDF" : ""}).`);
+        }
+      }
 
       let approvalNote = "";
       if (/borr|delete|rm /i.test(text)) {
@@ -1060,7 +1085,8 @@ export function startMockDashboard({
         return finish({ text: "", status: "error", error: "El proveedor devolvió 503 (mock)" });
       }
       const extra = notes.length ? `\n\n${notes.join("\n\n")}` : "";
-      const answer = `Listo. Recibí: _"${text}"_.\n\nEl servidor lleva **12 días** encendido.${extra}${approvalNote}`;
+      const said = text.replace(/^(@file:.*\n?)+/, "").trim();
+      const answer = `Listo. Recibí: _"${said}"_.\n\nEl servidor lleva **12 días** encendido.${extra}${approvalNote}`;
       if (!(await stream("message.delta", answer.match(/.{1,8}/gs), 25))) return interrupted(answer);
       push({ role: "assistant", content: answer });
       finish({ text: answer, status: "complete" });

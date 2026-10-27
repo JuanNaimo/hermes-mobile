@@ -76,3 +76,16 @@ test("history pairs tool results with their calls", () => {
   const tool = items[1];
   assert.ok(tool.kind === "tool" && tool.result === "contents" && tool.args.includes('"path": "x"'));
 });
+
+test("@file: refs at the start of a user message become file chips", async () => {
+  const { splitFileRefs, historyToItems } = await import("../src/lib/transcript.ts");
+  assert.deepEqual(splitFileRefs('@file:attachments/informe.pdf\n@file:"attachments/mis notas.txt"\n\nresumilos'), {
+    text: "resumilos",
+    files: ["informe.pdf", "mis notas.txt"],
+    refs: ["@file:attachments/informe.pdf", '@file:"attachments/mis notas.txt"'],
+  });
+  // Only leading lines count: a ref quoted mid-message is the person's text.
+  assert.deepEqual(splitFileRefs("mirá @file:x.txt").files, []);
+  const [item] = historyToItems([{ id: 7, role: "user", content: "@file:attachments/a.csv" }]);
+  assert.ok(item.kind === "user" && item.text === "" && item.files?.[0] === "a.csv" && item.fileRefs?.[0] === "@file:attachments/a.csv");
+});

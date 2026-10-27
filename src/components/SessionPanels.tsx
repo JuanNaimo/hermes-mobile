@@ -236,8 +236,10 @@ export function QueueStrip({
           >
             <span className="font-mono text-xs text-text-tertiary">{i + 1}</span>
             <span className="min-w-0 flex-1 truncate text-sm text-midground">
-              {q.text || "Imagen"}
-              {q.images.length > 0 && q.text && <span className="text-text-tertiary"> · {q.images.length} imagen(es)</span>}
+              {q.text || q.files[0]?.name || "Imagen"}
+              {(q.images.length > 0 || q.files.length > 0) && (
+                <span className="text-text-tertiary"> · {q.images.length + q.files.length} adjunto(s)</span>
+              )}
             </span>
             {!busy && i === 0 && (
               <button
