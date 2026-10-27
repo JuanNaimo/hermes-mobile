@@ -25,6 +25,10 @@ export function startMockDashboard({
   password = process.env.MOCK_PASSWORD ?? "hermes",
   accessTtl = Number(process.env.ACCESS_TTL ?? 12 * 3600),
   log = true,
+  /** Events kept per session for `session.events.since` (the real ring holds 512). */
+  replayMax = 512,
+  /** How long a session without a socket (and no turn running) stays live. */
+  orphanGraceMs = 20_000,
 } = {}) {
   const now = () => Date.now() / 1000;
   const token = () => randomBytes(24).toString("base64url");
@@ -604,8 +608,43 @@ export function startMockDashboard({
 
   /** ws ticket → expiry (single use, 30 s). */
   const tickets = new Map();
-  /** runtime session id → { profile, stored, ws, interrupted, pendingApproval } */
+  /**
+   * runtime session id → { profile, stored, ws, running, interrupted, pending, … }.
+   * A session outlives its socket, like on the real gateway: a turn keeps
+   * running detached and `session.resume` re-binds it to the new socket.
+   */
   const live = new Map();
+  /** Server→client requests still unanswered: id → { sid, method, params, resolve }. */
+  const openRequests = new Map();
+  /** runtime id → { seq, ring: [params…], evictedThrough } (event_replay.py). */
+  const replay = new Map();
+  /** Changes per mock process, like a server restart. */
+  const replayEpoch = randomBytes(6).toString("hex");
+  const isOpen = (ws) => ws && ws.readyState === 1;
+  const sendTo = (ws, obj) => isOpen(ws) && ws.send(JSON.stringify({ jsonrpc: "2.0", ...obj }));
+  /** Stamp, record and deliver one session event to whichever socket holds the session now. */
+  function emit(type, sid, payload) {
+    const r = replay.get(sid) ?? { seq: 0, ring: [], evictedThrough: 0 };
+    replay.set(sid, r);
+    const params = { type, session_id: sid, payload, seq: ++r.seq };
+    r.ring.push(params);
+    while (r.ring.length > replayMax) r.evictedThrough = r.ring.shift().seq;
+    sendTo(live.get(sid)?.ws, { method: "event", params });
+  }
+  function scheduleReap(sid) {
+    const s = live.get(sid);
+    if (!s) return;
+    clearTimeout(s.reap);
+    s.reap = setTimeout(() => {
+      const cur = live.get(sid);
+      if (!cur || cur.ws) return;
+      // A detached turn keeps going; check again once it's had time to end.
+      if (cur.running) return scheduleReap(sid);
+      live.delete(sid);
+      replay.delete(sid);
+    }, orphanGraceMs);
+    s.reap.unref?.();
+  }
   let runtimeN = 0;
   let requestN = 0;
   const wss = new WebSocketServer({ noServer: true });
@@ -650,18 +689,22 @@ export function startMockDashboard({
   });
 
   function onSocket(ws) {
-    const send = (obj) => ws.readyState === 1 && ws.send(JSON.stringify({ jsonrpc: "2.0", ...obj }));
-    const event = (type, sid, payload) => send({ method: "event", params: { type, session_id: sid, payload } });
-    /** Server→client requests waiting for an answer: id → resolve. */
-    const asked = new Map();
+    const send = (obj) => sendTo(ws, obj);
+    const event = (type, sid, payload) => (sid ? emit(type, sid, payload) : send({ method: "event", params: { type, payload } }));
+    /** Ask the client holding `sid` now; the answer may come from a later socket. */
     const ask = (method, sid, params) => {
       const id = `req_${++requestN}`;
+      const holder = live.get(sid)?.ws;
       // Without `client.capabilities {server_requests: true}` every request fails fast.
-      if (!capabilities) return { id, answer: Promise.resolve({ error: { code: -32601, message: "client takes no requests" } }) };
-      send({ id, method, params: { session_id: sid, ...params } });
-      return { id, answer: new Promise((resolve) => asked.set(id, resolve)) };
+      if (isOpen(holder) && !holder.capabilities) {
+        return { id, answer: Promise.resolve({ error: { code: -32601, message: "client takes no requests" } }) };
+      }
+      const full = { session_id: sid, ...params };
+      sendTo(holder, { id, method, params: full });
+      return { id, answer: new Promise((resolve) => openRequests.set(id, { sid, method, params: full, resolve })) };
     };
-    let capabilities = false;
+    const openFor = (sid) =>
+      [...openRequests.entries()].filter(([, r]) => r.sid === sid).map(([id, r]) => ({ id, method: r.method, params: r.params }));
     /** What `session.info` reports for a live session. */
     const infoOf = (s) => ({
       model: s.model, provider: s.provider, reasoning_effort: s.effort, fast: s.fast, yolo: s.yolo,
@@ -672,7 +715,7 @@ export function startMockDashboard({
       return { model: p.model, provider: p.provider, effort: "medium", fast: false, yolo: false, ...extra };
     };
 
-    event("gateway.ready", undefined, { skin: {}, change_events: true, heartbeat: true, replay_epoch: "mock" });
+    event("gateway.ready", undefined, { skin: {}, change_events: true, heartbeat: true, replay_epoch: replayEpoch });
 
     ws.on("message", async (raw) => {
       let msg;
@@ -682,9 +725,10 @@ export function startMockDashboard({
         return send({ id: null, error: { code: -32700, message: "parse error" } });
       }
       // The client answering one of our requests.
-      if (typeof msg.id === "string" && asked.has(msg.id) && !msg.method) {
-        asked.get(msg.id)(msg);
-        asked.delete(msg.id);
+      if (typeof msg.id === "string" && openRequests.has(msg.id) && !msg.method) {
+        const req = openRequests.get(msg.id);
+        openRequests.delete(msg.id);
+        req.resolve(msg);
         return;
       }
       const { id, method, params = {} } = msg;
@@ -695,7 +739,7 @@ export function startMockDashboard({
         case "gateway.ping":
           return reply({ ok: true });
         case "client.capabilities":
-          capabilities = Boolean(params.server_requests);
+          ws.capabilities = Boolean(params.server_requests);
           return reply({ server_requests: ["approval", "clarify", "sudo", "secret"], declines_not_shown: true });
         case "session.create": {
           const profile = params.profile || "default";
@@ -713,6 +757,22 @@ export function startMockDashboard({
           const profile = params.profile || "default";
           const row = sessions.find((s) => s.id === params.session_id && s.profile === profile);
           if (!row) return fail(4004, `session not found: ${params.session_id}`);
+          // Already live (a turn running detached, or another socket): re-bind it here.
+          const found = [...live.entries()].find(([, x]) => x.stored === row.id && x.profile === profile);
+          if (found) {
+            const [rid, s] = found;
+            s.ws = ws;
+            clearTimeout(s.reap);
+            const count = messages.get(`${profile}/${row.id}`)?.length ?? 0;
+            const open = openFor(rid);
+            return reply({
+              session_id: rid, stored_session_id: row.id, message_count: count, messages: [], messages_omitted: true,
+              info: infoOf(s), todo_state: row.todos ?? null, running: Boolean(s.running),
+              status: s.running ? "streaming" : "idle",
+              ...(s.running ? { inflight: { user: s.inflightUser ?? "", assistant: s.inflightText ?? "", streaming: true } } : {}),
+              ...(open.length ? { open_requests: open } : {}),
+            });
+          }
           const rid = `rt_${++runtimeN}`;
           const s = freshLive(profile, { profile, stored: row.id, title: row.title, ws, created: true, model: row.model });
           live.set(rid, s);
@@ -730,8 +790,8 @@ export function startMockDashboard({
             if (m === "approval") {
               event("approval.cancelled", params.session_id, { session_id: params.session_id, stored_session_id: s.stored, reason: "interrupt", cancelled_count: 1, request_ids: [requestId] });
             }
-            asked.get(rid)?.({ cancelled: true, result: m === "approval" ? { choice: "deny" } : {} });
-            asked.delete(rid);
+            openRequests.get(rid)?.resolve({ cancelled: true, result: m === "approval" ? { choice: "deny" } : {} });
+            openRequests.delete(rid);
           }
           return reply({ status: running ? "interrupted" : "not_interrupted", interrupted: running });
         }
@@ -753,6 +813,13 @@ export function startMockDashboard({
           reply({ status: "streaming" });
           void runTurn(params.session_id, s, text);
           return;
+        }
+        case "session.events.since": {
+          const sid = String(params.session_id ?? "");
+          const last = Number(params.last_seen ?? 0);
+          const r = replay.get(sid) ?? { seq: 0, ring: [], evictedThrough: 0 };
+          const events = r.ring.filter((e) => e.seq > last);
+          return reply({ events, latest_seq: r.seq, truncated: last < r.evictedThrough, count: events.length, epoch: replayEpoch, open_requests: openFor(sid) });
         }
         case "model.options": {
           const s = live.get(params.session_id);
@@ -836,6 +903,8 @@ export function startMockDashboard({
     async function runTurn(sid, s, text) {
       s.running = true;
       s.interrupted = false;
+      s.inflightUser = text;
+      s.inflightText = "";
       const key = `${s.profile}/${s.stored}`;
       if (!s.created) {
         s.created = true;
@@ -855,6 +924,7 @@ export function startMockDashboard({
       const stream = async (type, words, delay = 30) => {
         for (const w of words) {
           if (s.interrupted) return false;
+          if (type === "message.delta") s.inflightText += w;
           event(type, sid, { text: w });
           await sleep(delay);
         }
@@ -862,6 +932,7 @@ export function startMockDashboard({
       };
       const finish = (payload) => {
         s.running = false;
+        s.inflightUser = s.inflightText = undefined;
         s.turns = (s.turns ?? 0) + 1;
         s.usage = { input: 1200 * s.turns, output: 300 * s.turns, total: 1500 * s.turns, calls: s.turns, context_used: 9000 * s.turns, context_max: 200000, context_percent: Math.min(100, 4.5 * s.turns), cost_usd: 0.012 * s.turns };
         event("session.usage", sid, { usage: s.usage });
@@ -976,7 +1047,12 @@ export function startMockDashboard({
     }
 
     ws.on("close", () => {
-      for (const [rid, s] of live) if (s.ws === ws) live.delete(rid);
+      for (const [rid, s] of live) {
+        if (s.ws !== ws) continue;
+        s.ws = null;
+        // Questions sent to this socket stay open for whoever re-attaches.
+        scheduleReap(rid);
+      }
     });
   }
 
@@ -990,6 +1066,7 @@ export function startMockDashboard({
         /** Kill every chat socket without a close frame (Wi-Fi drop, server restart). */
         dropSockets: () => wss.clients.forEach((c) => c.terminate()),
         close: () => {
+          for (const s of live.values()) clearTimeout(s.reap);
           wss.clients.forEach((c) => c.terminate());
           return new Promise((r) => server.close(r));
         },

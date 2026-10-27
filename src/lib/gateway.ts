@@ -16,6 +16,8 @@ export interface GatewayEvent {
   type: string;
   session_id?: string;
   payload: Record<string, unknown>;
+  /** Per-session sequence number the server stamps for `session.events.since` replay. */
+  seq?: number;
 }
 
 export interface ServerRequest {
@@ -49,6 +51,7 @@ const REQUEST_TIMEOUT_MS = 60_000;
 const READY_TIMEOUT_MS = 15_000;
 const PING_EVERY_MS = 25_000;
 const PING_TIMEOUT_MS = 10_000;
+const PROBE_TIMEOUT_MS = 4_000;
 
 interface Pending {
   resolve: (v: unknown) => void;
@@ -93,6 +96,21 @@ export class GatewayClient {
    */
   get sessionAuthority(): boolean {
     return this.readyPayload.session_authority === true;
+  }
+
+  /** Changes when the server restarts; replay sequence numbers only hold within one epoch. */
+  get replayEpoch(): string {
+    return typeof this.readyPayload.replay_epoch === "string" ? this.readyPayload.replay_epoch : "";
+  }
+
+  /**
+   * Check a connection the OS may have killed silently (the app came back
+   * from the background): a ping that goes unanswered closes it, which fires
+   * the disconnect listeners.
+   */
+  probe() {
+    if (this.status !== "open") return;
+    this.request("gateway.ping", {}, PROBE_TIMEOUT_MS).catch(() => this.socket?.close(4000, "ping timeout"));
   }
 
   /** Subscribe to events; returns the unsubscribe function. */
@@ -216,9 +234,7 @@ export class GatewayClient {
   private handle(msg: Record<string, unknown>) {
     if (msg.method === "event") {
       const params = (msg.params ?? {}) as Partial<GatewayEvent>;
-      const event: GatewayEvent = { type: String(params.type ?? ""), session_id: params.session_id, payload: params.payload ?? {} };
-      this.opts.onEvent?.(event);
-      this.listeners.forEach((l) => l(event));
+      this.dispatch(params);
       return;
     }
     if (typeof msg.method === "string" && msg.id != null && !("result" in msg) && !("error" in msg)) {
@@ -236,6 +252,14 @@ export class GatewayClient {
       if (error) p.reject(new GatewayError(error.message || "Error del gateway", error.code ?? "rpc_error", error.data));
       else p.resolve(msg.result);
     }
+  }
+
+  /** Deliver one event to the listeners. */
+  private dispatch(params: Partial<GatewayEvent>) {
+    const event: GatewayEvent = { type: String(params.type ?? ""), session_id: params.session_id, payload: params.payload ?? {} };
+    if (typeof params.seq === "number") event.seq = params.seq;
+    this.opts.onEvent?.(event);
+    this.listeners.forEach((l) => l(event));
   }
 
   private sendFrame(frame: Record<string, unknown>) {

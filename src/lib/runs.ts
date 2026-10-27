@@ -22,6 +22,8 @@ export interface LiveRun {
   stream: StreamState;
   busy: boolean;
   controls: RunControls;
+  /** Picked up from the server (it was already running when this app attached), not started here. */
+  resumed?: boolean;
 }
 
 type Listener = () => void;
@@ -69,9 +71,26 @@ export function useRunsVersion(): number {
 // -- building blocks for a backend's run driver ---------------------------------
 
 /** Start a busy run showing the optimistic user message. */
-export function beginRun(sessionId: string, text: string, images: string[], controls: RunControls) {
-  const items: ChatItem[] = [userItem(text, images)];
-  set(sessionId, { stream: { items, finished: false }, busy: true, controls });
+export function beginRun(
+  sessionId: string,
+  text: string,
+  images: string[],
+  controls: RunControls,
+  opts: { resumed?: boolean } = {},
+) {
+  const items: ChatItem[] = text || images.length ? [userItem(text, images)] : [];
+  set(sessionId, { stream: { items, finished: false }, busy: true, controls, resumed: opts.resumed });
+}
+
+/**
+ * Restart a run's output from a server snapshot (its user message stays):
+ * used when the events in between can't be replayed.
+ */
+export function resetRunOutput(sessionId: string) {
+  const run = runs.get(sessionId);
+  if (!run) return;
+  const keep = run.stream.items[0]?.kind === "user" ? [run.stream.items[0]] : [];
+  set(sessionId, { ...run, stream: { items: keep, finished: false } });
 }
 
 /** Feed one event (in the reducer's vocabulary) into a run. */

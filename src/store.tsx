@@ -175,6 +175,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [dashboard],
   );
   useEffect(() => () => chat?.close(), [chat]);
+  // Back from the background, the OS may have killed the socket without telling us:
+  // check now so a turn in progress reconnects instead of waiting for the next ping.
+  useEffect(() => {
+    if (!chat) return;
+    const onVisible = () => document.visibilityState === "visible" && chat.gateway.probe();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [chat]);
 
   const resetSessions = useCallback(() => {
     setSessions([]);

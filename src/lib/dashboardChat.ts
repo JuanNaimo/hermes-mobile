@@ -1,8 +1,8 @@
 import type { DashboardClient } from "./dashboard.ts";
-import { GatewayClient, GatewayError, type GatewayStatus, type ServerRequest } from "./gateway.ts";
+import { GatewayClient, GatewayError, type GatewayEvent, type GatewayStatus, type ServerRequest } from "./gateway.ts";
 import { gatewayEventToStream, serverRequestToStream } from "./gatewayEvents.ts";
 import { normalizeModelOptions, type ModelOptions } from "./models.ts";
-import { beginRun, endRun, getRun, runEvent } from "./runs.ts";
+import { beginRun, endRun, getRun, resetRunOutput, runEvent, type RunControls } from "./runs.ts";
 import { adoptFences, forgetFences, getLive, mergeInfo, setTodos, setUsage } from "./sessionLive.ts";
 import type { SocketFactory } from "./socket.ts";
 
@@ -24,6 +24,19 @@ export type SlashOutcome =
   | { kind: "send"; message: string; display?: string }
   | { kind: "prefill"; message: string };
 
+/** What `session.resume` says about a turn already running on the server. */
+interface ResumeResult extends Record<string, unknown> {
+  session_id: string;
+  running?: boolean;
+  inflight?: { user?: string; assistant?: string } | null;
+  open_requests?: ServerRequest[];
+}
+
+/** Waits before each reconnect attempt after a drop mid-turn (the server keeps a detached turn for ~20 s). */
+const RECONNECT_DELAYS_MS = [300, 1500, 4000];
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 export interface SlashCompletion {
   text: string;
   display?: string;
@@ -38,6 +51,11 @@ export interface SlashCompletion {
  * `session.resume` hand out per connection. This class keeps that mapping and
  * forgets it when the socket drops, since the server detaches live sessions
  * from a closed connection.
+ *
+ * A turn outlives its socket on the server. When the connection drops
+ * mid-turn this class reconnects, resumes the session and replays what it
+ * missed (`session.events.since`); opening a session that is already running
+ * picks the turn up from `session.resume`'s in-flight snapshot.
  *
  * Two server flavours: a plain `hermes dashboard` takes the legacy setters
  * (`config.set`, `session.undo`, `session.branch_stored`); one hosted by the
@@ -54,6 +72,15 @@ export class DashboardChat {
   /** stored id → the resume in flight, so concurrent callers share it. */
   private attaching = new Map<string, Promise<string>>();
   private readonly finishers = new Map<string, () => void>();
+  /** stored id → its profile, kept across connections to resume after a drop. */
+  private readonly profiles = new Map<string, string>();
+  /** runtime id → the last event `seq` applied, for `session.events.since`. */
+  private readonly lastSeq = new Map<string, number>();
+  /** runtime id → live events held back while its replay is in flight. */
+  private readonly catchingUp = new Map<string, GatewayEvent[]>();
+  private readonly onSessionsChanged?: () => void;
+  private closed = false;
+  private readonly reconnectDelays: number[];
 
   constructor(
     dashboard: DashboardClient,
@@ -62,8 +89,10 @@ export class DashboardChat {
       onStatus?: (s: GatewayStatus, detail?: string) => void;
       /** A title changed or sessions came and went on the server: refetch the list. */
       onSessionsChanged?: () => void;
+      reconnectDelaysMs?: number[];
     } = {},
   ) {
+    this.reconnectDelays = opts.reconnectDelaysMs ?? RECONNECT_DELAYS_MS;
     this.dashboard = dashboard;
     this.gateway = new GatewayClient({
       url: (attempt) => dashboard.wsUrl(attempt),
@@ -71,127 +100,149 @@ export class DashboardChat {
       onStatus: opts.onStatus,
       onServerRequest: (req) => this.onServerRequest(req),
     });
+    this.onSessionsChanged = opts.onSessionsChanged;
     this.gateway.on((event) => {
-      if (event.type === "sessions.changed") return opts.onSessionsChanged?.();
-      const sid = event.session_id && this.stored.get(event.session_id);
-      if (!sid) return;
-      const p = event.payload;
-      // Session state: whether or not a turn runs here.
-      adoptFences(sid, event.type === "session.info" || event.type === "session.updated" ? p.revision : undefined,
-        (event as { execution_generation?: unknown }).execution_generation ?? p.execution_generation);
-      switch (event.type) {
-        case "session.info":
-          mergeInfo(sid, p);
-          break;
-        case "session.usage":
-          setUsage(sid, p.usage ?? p);
-          break;
-        case "todo.updated":
-          setTodos(sid, p.todos, p.revision);
-          break;
-        case "tool.complete":
-          if (p.todos) setTodos(sid, p.todos, p.revision);
-          break;
-        case "message.complete":
-          setUsage(sid, p.usage);
-          break;
-        case "session.title":
-          mergeInfo(sid, { title: p.title });
-          opts.onSessionsChanged?.();
-          break;
-      }
-      if (!getRun(sid)?.busy) return;
-      for (const [name, payload] of gatewayEventToStream(event)) runEvent(sid, name, payload);
-      if (event.type === "message.complete") this.finish(sid);
+      const held = event.session_id ? this.catchingUp.get(event.session_id) : undefined;
+      if (held && typeof event.seq === "number") held.push(event);
+      else this.apply(event);
     });
     this.gateway.onDisconnect((reason) => {
+      const epoch = this.gateway.replayEpoch;
+      const running = [...this.finishers.keys()].map((sid) => ({ sid, rid: this.runtime.get(sid) }));
       this.runtime.clear();
       this.stored.clear();
       this.attaching.clear();
+      this.catchingUp.clear();
       forgetFences();
-      // A turn can't be followed across connections: say so and let the
-      // transcript (reloaded from REST) show what the server did.
-      for (const [sid] of this.finishers) {
+      if (running.length) void this.recover(reason, epoch, running);
+    });
+  }
+
+  private apply(event: GatewayEvent) {
+    if (event.type === "sessions.changed") return this.onSessionsChanged?.();
+    const rid = event.session_id;
+    if (rid && typeof event.seq === "number") {
+      // A replay and the live stream can overlap: apply each event once.
+      if (event.seq <= (this.lastSeq.get(rid) ?? 0)) return;
+      this.lastSeq.set(rid, event.seq);
+    }
+    const sid = rid && this.stored.get(rid);
+    if (!sid) return;
+    const p = event.payload;
+    // Session state: whether or not a turn runs here.
+    adoptFences(sid, event.type === "session.info" || event.type === "session.updated" ? p.revision : undefined,
+      (event as { execution_generation?: unknown }).execution_generation ?? p.execution_generation);
+    switch (event.type) {
+      case "session.info":
+        mergeInfo(sid, p);
+        break;
+      case "session.usage":
+        setUsage(sid, p.usage ?? p);
+        break;
+      case "todo.updated":
+        setTodos(sid, p.todos, p.revision);
+        break;
+      case "tool.complete":
+        if (p.todos) setTodos(sid, p.todos, p.revision);
+        break;
+      case "message.complete":
+        setUsage(sid, p.usage);
+        break;
+      case "session.title":
+        mergeInfo(sid, { title: p.title });
+        this.onSessionsChanged?.();
+        break;
+    }
+    if (!getRun(sid)?.busy) return;
+    for (const [name, payload] of gatewayEventToStream(event)) runEvent(sid, name, payload);
+    if (event.type === "message.complete") this.finish(sid);
+  }
+
+  /**
+   * The socket dropped while turns ran: reconnect, re-attach each session and
+   * fill in what happened meanwhile. Gives up (with a notice) when the
+   * dashboard stays unreachable.
+   */
+  private async recover(reason: string, epoch: string, running: { sid: string; rid?: string }[]) {
+    for (const delay of this.reconnectDelays) {
+      await sleep(delay);
+      if (this.closed) return;
+      try {
+        await this.gateway.connect();
+        break;
+      } catch {
+        /* next attempt */
+      }
+    }
+    // Same server process: its sequence numbers still hold.
+    const sameServer = this.gateway.state === "open" && epoch !== "" && epoch === this.gateway.replayEpoch;
+    for (const { sid, rid } of running) {
+      if (!this.finishers.has(sid)) continue;
+      try {
+        if (this.gateway.state !== "open") throw new Error(reason);
+        await this.catchUp(sid, sameServer ? rid : undefined);
+      } catch {
         runEvent(sid, "error", {
           message: `${reason} Si el turno seguía en el servidor, recargá la sesión para ver el resultado.`,
         });
         this.finish(sid);
       }
-    });
-  }
-
-  private finish(storedId: string) {
-    endRun(storedId);
-    const done = this.finishers.get(storedId);
-    this.finishers.delete(storedId);
-    done?.();
-  }
-
-  private remember(storedId: string, runtimeId: string, result: Record<string, unknown>) {
-    this.runtime.set(storedId, runtimeId);
-    this.stored.set(runtimeId, storedId);
-    mergeInfo(storedId, result.info as Record<string, unknown> | undefined);
-    adoptFences(storedId, result.revision, result.execution_generation);
-    const todos = result.todo_state as { todos?: unknown; revision?: unknown } | null | undefined;
-    if (todos) setTodos(storedId, todos.todos, todos.revision);
-  }
-
-  /** New session in `profile`. Its stored row appears once the first prompt runs. */
-  async create(profile: string, title?: string, options: NewSessionOptions = {}): Promise<string> {
-    const params: Record<string, unknown> = { profile, ...(title ? { title } : {}) };
-    for (const [k, v] of Object.entries(options)) if (v) params[k] = v;
-    const res = await this.gateway.request<{ session_id: string; stored_session_id: string } & Record<string, unknown>>(
-      "session.create",
-      params,
-    );
-    this.remember(res.stored_session_id, res.session_id, res);
-    return res.stored_session_id;
-  }
-
-  /**
-   * Attach a stored session to this connection (once) and return its runtime
-   * id. Opening a session does this too, so its model, effort and usage show
-   * before anything is sent.
-   */
-  async attach(storedId: string, profile: string): Promise<string> {
-    await this.gateway.connect();
-    const known = this.runtime.get(storedId);
-    if (known) return known;
-    let pending = this.attaching.get(storedId);
-    if (!pending) {
-      pending = this.gateway
-        .request<{ session_id: string } & Record<string, unknown>>("session.resume", {
-          session_id: storedId,
-          profile,
-          // History comes from REST; don't ship the transcript twice.
-          omit_messages: true,
-          inline_images: false,
-        })
-        .then((res) => {
-          this.remember(storedId, res.session_id, res);
-          return res.session_id;
-        })
-        .finally(() => this.attaching.delete(storedId));
-      this.attaching.set(storedId, pending);
     }
-    return pending;
   }
 
-  /**
-   * Run one turn; resolves when it is accepted, `onFinished` fires when it ends.
-   * `images` are data URLs; each is queued with `image.attach_bytes` and rides
-   * along with the next `prompt.submit`. `before` runs first, inside the turn
-   * (a retry's undo), so its failure shows in the transcript like any other.
-   */
-  async send(
-    storedId: string,
-    profile: string,
-    text: string,
-    images: string[] = [],
-    onFinished?: () => void,
-    before?: (runtimeId: string) => Promise<void>,
-  ): Promise<void> {
-    beginRun(storedId, text, images, {
+  /** Re-attach a running session after a reconnect; `rid` set = replay from the last event seen. */
+  private async catchUp(storedId: string, rid?: string) {
+    const profile = this.profiles.get(storedId);
+    if (!profile) throw new Error("profile unknown");
+    if (rid) this.catchingUp.set(rid, []);
+    let res: ResumeResult;
+    try {
+      res = await this.resume(storedId, profile);
+      if (rid && res.session_id === rid) {
+        const since = await this.gateway.request<{ events?: Partial<GatewayEvent>[]; truncated?: boolean; open_requests?: ServerRequest[] }>(
+          "session.events.since",
+          { session_id: rid, last_seen: this.lastSeq.get(rid) ?? 0 },
+        );
+        // Too far behind to replay: a running turn restarts from its snapshot; an ended
+        // one keeps what it showed until the stored transcript replaces it.
+        if (since.truncated) {
+          if (res.running) this.restartFrom(storedId, res);
+        } else for (const ev of since.events ?? []) this.apply(toEvent(ev));
+        this.deliverOpenRequests(storedId, since.open_requests ?? res.open_requests);
+      } else if (res.running) {
+        this.restartFrom(storedId, res);
+        this.deliverOpenRequests(storedId, res.open_requests);
+      }
+    } finally {
+      const held = rid ? this.catchingUp.get(rid) : undefined;
+      if (rid) this.catchingUp.delete(rid);
+      for (const ev of held ?? []) this.apply(ev);
+    }
+    // It ended while we were away and the replay didn't carry the end: the stored transcript has it.
+    if (!res.running && getRun(storedId)?.busy) this.finish(storedId);
+  }
+
+  /** Show a running turn from the server's snapshot of it. */
+  private restartFrom(storedId: string, res: ResumeResult) {
+    resetRunOutput(storedId);
+    const text = res.inflight?.assistant;
+    if (text) runEvent(storedId, "assistant.delta", { delta: text });
+  }
+
+  /** Cards for questions the server is still waiting on, unless already shown. */
+  private deliverOpenRequests(storedId: string, requests: ServerRequest[] | undefined) {
+    const items = getRun(storedId)?.stream.items ?? [];
+    for (const req of requests ?? []) {
+      const shown = items.some((it) => (it.kind === "approval" || it.kind === "input") && it.rpcId === req.id);
+      if (shown || !["approval", "clarify", "sudo", "secret"].includes(req.method)) continue;
+      const [name, payload] = serverRequestToStream({ id: req.id, method: req.method, params: req.params ?? {} });
+      runEvent(storedId, name, payload);
+    }
+  }
+
+  /** The turn controls the chat view uses (stop, approve, answer). */
+  private controls(storedId: string, profile: string): RunControls {
+    return {
       stop: async () => {
         const rid = this.runtime.get(storedId);
         if (rid) await this.gateway.request("session.interrupt", { session_id: rid, profile });
@@ -208,7 +259,99 @@ export class DashboardChat {
       respond: async (item, result) => {
         this.gateway.respond(item.rpcId, result);
       },
+    };
+  }
+
+  private finish(storedId: string) {
+    endRun(storedId);
+    const done = this.finishers.get(storedId);
+    this.finishers.delete(storedId);
+    done?.();
+  }
+
+  private remember(storedId: string, runtimeId: string, result: Record<string, unknown>, profile?: string) {
+    if (profile) this.profiles.set(storedId, profile);
+    this.runtime.set(storedId, runtimeId);
+    this.stored.set(runtimeId, storedId);
+    mergeInfo(storedId, result.info as Record<string, unknown> | undefined);
+    adoptFences(storedId, result.revision, result.execution_generation);
+    const todos = result.todo_state as { todos?: unknown; revision?: unknown } | null | undefined;
+    if (todos) setTodos(storedId, todos.todos, todos.revision);
+  }
+
+  /** New session in `profile`. Its stored row appears once the first prompt runs. */
+  async create(profile: string, title?: string, options: NewSessionOptions = {}): Promise<string> {
+    const params: Record<string, unknown> = { profile, ...(title ? { title } : {}) };
+    for (const [k, v] of Object.entries(options)) if (v) params[k] = v;
+    const res = await this.gateway.request<{ session_id: string; stored_session_id: string } & Record<string, unknown>>(
+      "session.create",
+      params,
+    );
+    this.remember(res.stored_session_id, res.session_id, res, profile);
+    return res.stored_session_id;
+  }
+
+  /**
+   * Attach a stored session to this connection (once) and return its runtime
+   * id. Opening a session does this too, so its model, effort and usage show
+   * before anything is sent.
+   */
+  async attach(storedId: string, profile: string): Promise<string> {
+    await this.gateway.connect();
+    const known = this.runtime.get(storedId);
+    if (known) return known;
+    let pending = this.attaching.get(storedId);
+    if (!pending) {
+      pending = this.resume(storedId, profile)
+        .then((res) => {
+          this.adoptRunning(storedId, profile, res);
+          return res.session_id;
+        })
+        .finally(() => this.attaching.delete(storedId));
+      this.attaching.set(storedId, pending);
+    }
+    return pending;
+  }
+
+  private async resume(storedId: string, profile: string): Promise<ResumeResult> {
+    const res = await this.gateway.request<ResumeResult>("session.resume", {
+      session_id: storedId,
+      profile,
+      // History comes from REST; don't ship the transcript twice.
+      omit_messages: true,
+      inline_images: false,
     });
+    this.remember(storedId, res.session_id, res, profile);
+    return res;
+  }
+
+  /**
+   * The session was already running a turn when we attached (the app was
+   * reopened, or the turn came from another device): follow it from here.
+   */
+  private adoptRunning(storedId: string, profile: string, res: ResumeResult) {
+    if (!res.running || getRun(storedId)?.busy) return;
+    beginRun(storedId, res.inflight?.user ?? "", [], this.controls(storedId, profile), { resumed: true });
+    this.finishers.set(storedId, () => this.onSessionsChanged?.());
+    this.restartFrom(storedId, res);
+    this.deliverOpenRequests(storedId, res.open_requests);
+  }
+
+  /**
+   * Run one turn; resolves when it is accepted, `onFinished` fires when it ends.
+   * `images` are data URLs; each is queued with `image.attach_bytes` and rides
+   * along with the next `prompt.submit`. `before` runs first, inside the turn
+   * (a retry's undo), so its failure shows in the transcript like any other.
+   */
+  async send(
+    storedId: string,
+    profile: string,
+    text: string,
+    images: string[] = [],
+    onFinished?: () => void,
+    before?: (runtimeId: string) => Promise<void>,
+  ): Promise<void> {
+    beginRun(storedId, text, images, this.controls(storedId, profile));
     this.finishers.set(storedId, () => onFinished?.());
     try {
       const rid = await this.attach(storedId, profile);
@@ -349,7 +492,7 @@ export class DashboardChat {
       "session.branch_stored",
       { parent_session_id: storedId, profile, ...(title ? { title } : {}) },
     );
-    this.remember(res.stored_session_id, res.session_id, res);
+    this.remember(res.stored_session_id, res.session_id, res, profile);
     return res.stored_session_id;
   }
 
@@ -412,6 +555,7 @@ export class DashboardChat {
   }
 
   close() {
+    this.closed = true;
     this.gateway.close();
     this.runtime.clear();
     this.stored.clear();
@@ -433,4 +577,13 @@ export function slashOutcome(res: Record<string, unknown> | null | undefined): S
   }
   const text = [str(r.output), str(r.notice), str(r.warning)].filter(Boolean).join("\n\n");
   return { kind: "output", text: text || "Listo." };
+}
+
+function toEvent(params: Partial<GatewayEvent>): GatewayEvent {
+  return {
+    type: String(params.type ?? ""),
+    session_id: params.session_id,
+    payload: params.payload ?? {},
+    ...(typeof params.seq === "number" ? { seq: params.seq } : {}),
+  };
 }

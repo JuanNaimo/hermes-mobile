@@ -106,6 +106,16 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     if (activeSessionId && !waitingForProfile) void loadHistory(activeSessionId, sessionProfile);
   }, [activeSessionId, sessionProfile, waitingForProfile, loadHistory]);
 
+  // A turn picked up from the server (opened mid-reply): reload so the stored
+  // part of it isn't shown twice, and again once it ends.
+  const resumed = Boolean(run?.resumed);
+  useEffect(() => {
+    if (!resumed || !activeSessionId || waitingForProfile) return;
+    if (!busy) void refreshSessions();
+    if (busy || !endedWithNotice(activeSessionId)) void loadHistory(activeSessionId, sessionProfile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumed, busy]);
+
   // A remembered session that no longer exists (deleted, other login).
   useEffect(() => {
     if (waitingForProfile && !sessionsLoading && sessions.length > 0) setActiveSessionId(null);

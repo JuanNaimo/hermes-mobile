@@ -228,31 +228,139 @@ test("handshake rules: single-use tickets, and a foreign Origin is refused", asy
   assert.equal(await handshake(await dash.wsUrl()), 101);
 });
 
-test("DashboardChat: a dropped socket ends the turn with a notice, the next send reconnects", async () => {
+const until = async (cond: () => boolean, what = "condition") => {
+  for (let i = 0; i < 800 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
+  assert.ok(cond(), what);
+};
+
+const assistantText = (items: { kind: string; text?: string }[]) =>
+  items.filter((i) => i.kind === "assistant").map((i) => i.text).join("\n");
+
+test("DashboardChat: a socket dropped mid-turn reconnects and the turn goes on with what it missed", async () => {
   const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
   const { getRun } = await import("../src/lib/runs.ts");
-  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const chat = new DashboardChat(dash, { socketFactory: webSocket, reconnectDelaysMs: [50, 200] });
   const nas = (await dash.sessions("default")).find((s) => s.title === "Revisión del NAS")!;
-  const until = async (cond: () => boolean) => {
-    for (let i = 0; i < 500 && !cond(); i++) await new Promise((r) => setTimeout(r, 10));
-    assert.ok(cond());
-  };
 
   let finished = 0;
   void chat.send(nas.id, "default", "contame algo largo", [], () => finished++);
-  await until(() => getRun(nas.id)?.stream.items.some((i) => i.kind === "assistant" && i.text.length > 0) ?? false);
+  await until(() => /Dale/.test(assistantText(getRun(nas.id)?.stream.items ?? [])), "streaming started");
   (mock as unknown as { dropSockets: () => void }).dropSockets();
-  await until(() => finished === 1);
-  const dropped = getRun(nas.id)!;
-  assert.equal(dropped.busy, false);
-  assert.ok(dropped.stream.items.some((i) => i.kind === "notice" && /Se cortó la conexión/.test(i.text)));
+  await until(() => finished === 1, "turn finished");
+  const run = getRun(nas.id)!;
+  assert.equal(run.busy, false);
+  assert.ok(!run.stream.items.some((i) => i.kind === "notice"), "no error notice");
+  const text = assistantText(run.stream.items);
+  assert.equal(text.match(/Dale, lo reviso/g)?.length, 1, "replayed events are applied once");
+  assert.match(text, /Listo\. Recibí: _"contame algo largo"_/);
+  assert.equal(run.stream.items.filter((i) => i.kind === "tool").length, 1);
 
-  // Same session again: new socket, `session.resume` for a fresh runtime id.
+  // The connection is usable again.
   await chat.send(nas.id, "default", "hola de nuevo", [], () => finished++);
   await until(() => finished === 2);
-  const again = getRun(nas.id)!;
-  assert.ok(again.stream.items.some((i) => i.kind === "assistant" && /hola de nuevo/.test(i.text)));
+  assert.match(assistantText(getRun(nas.id)!.stream.items), /hola de nuevo/);
   chat.close();
+});
+
+test("DashboardChat: a question asked before the drop stays on screen and can be answered after it", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getRun, answerInput } = await import("../src/lib/runs.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket, reconnectDelaysMs: [50, 200] });
+  const nas = (await dash.sessions("default")).find((s) => s.title === "Revisión del NAS")!;
+  let finished = 0;
+  void chat.send(nas.id, "default", "hacé el deploy", [], () => finished++);
+  await until(() => getRun(nas.id)?.stream.items.some((i) => i.kind === "input") ?? false, "card shown");
+  (mock as unknown as { dropSockets: () => void }).dropSockets();
+  await until(() => chat.gateway.state === "closed");
+  await until(() => chat.gateway.state === "open", "reconnected");
+  await new Promise((r) => setTimeout(r, 100));
+  const cards = getRun(nas.id)!.stream.items.filter((i) => i.kind === "input");
+  assert.equal(cards.length, 1, "the open request is not shown twice");
+  await answerInput(nas.id, cards[0].key, { answers: { q1: "prod", q2: '["api"]' }, outcome: "submitted" }, "answered");
+  await until(() => finished === 1, "turn finished");
+  assert.match(assistantText(getRun(nas.id)!.stream.items), /Deploy a \*\*prod\*\*; servicios: api/);
+  chat.close();
+});
+
+test("DashboardChat: opening a session that is mid-turn follows it from the server's snapshot", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getRun, answerInput } = await import("../src/lib/runs.ts");
+  const ideas = (await dash.sessions("tech-insider")).find((s) => s.title === "Ideas de posts")!;
+
+  // Another device starts a turn that stops on a question, then goes away.
+  const other = new GatewayClient({ url: () => dash.wsUrl(0), socketFactory: webSocket, onServerRequest: () => {} });
+  const { session_id: rid } = await other.request<{ session_id: string }>("session.resume", { session_id: ideas.id, profile: "tech-insider", omit_messages: true });
+  let asked = false;
+  other.on((e) => e.type === "message.delta" && e.session_id === rid && e.payload.text === null && (asked = true));
+  await other.request("prompt.submit", { session_id: rid, text: "hacé el deploy" });
+  await until(() => asked, "other device saw the first segment");
+  await new Promise((r) => setTimeout(r, 500));
+  other.close();
+
+  let changed = 0;
+  const chat = new DashboardChat(dash, { socketFactory: webSocket, onSessionsChanged: () => changed++ });
+  await chat.attach(ideas.id, "tech-insider");
+  const run = getRun(ideas.id)!;
+  assert.ok(run.busy && run.resumed);
+  assert.equal(run.stream.items[0].kind, "user");
+  assert.equal(run.stream.items[0].kind === "user" && run.stream.items[0].text, "hacé el deploy");
+  assert.match(assistantText(run.stream.items), /Dale, lo reviso en el servidor\./);
+  const card = run.stream.items.find((i) => i.kind === "input");
+  assert.ok(card, "the pending question comes from open_requests");
+  await answerInput(ideas.id, card.key, { answers: { q1: "staging", q2: '["web"]' }, outcome: "submitted" }, "answered");
+  await until(() => !getRun(ideas.id)!.busy, "turn finished");
+  assert.match(assistantText(getRun(ideas.id)!.stream.items), /Deploy a \*\*staging\*\*; servicios: web/);
+  assert.ok(changed > 0, "the list refreshes when a picked-up turn ends");
+  chat.close();
+});
+
+test("DashboardChat: a replay that fell out of the server's window restarts the reply from its snapshot", async () => {
+  const small = await startMockDashboard({ port: 0, log: false, replayMax: 3 });
+  try {
+    const url = `http://127.0.0.1:${small.port}`;
+    const d = new DashboardClient(url, await dashboardLogin({ baseUrl: url, username: "hermes", password: "hermes" }));
+    const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+    const { getRun } = await import("../src/lib/runs.ts");
+    const chat = new DashboardChat(d, { socketFactory: webSocket, reconnectDelaysMs: [150] });
+    const id = await chat.create("default", "Ventana corta");
+    let finished = 0;
+    void chat.send(id, "default", "contame algo", [], () => finished++);
+    await until(() => /Dale/.test(assistantText(getRun(id)?.stream.items ?? [])), "streaming started");
+    small.dropSockets();
+    await until(() => finished === 1, "turn finished");
+    const items = getRun(id)!.stream.items;
+    assert.ok(!items.some((i) => i.kind === "notice"));
+    const text = assistantText(items);
+    assert.equal(text.match(/Dale, lo reviso/g)?.length, 1);
+    assert.equal(text.match(/Listo\./g)?.length, 1);
+    assert.match(text, /lleva \*\*12 días\*\* encendido\.$/);
+    chat.close();
+  } finally {
+    await small.close();
+  }
+});
+
+test("DashboardChat: when the dashboard stays unreachable the turn ends with a notice", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getRun } = await import("../src/lib/runs.ts");
+  let blocked = false;
+  const factory: typeof webSocket = (url, h) => {
+    if (!blocked) return webSocket(url, h);
+    setTimeout(() => h.onClose(1006, "", false), 5);
+    return { send() {}, close() {} };
+  };
+  const chat = new DashboardChat(dash, { socketFactory: factory, reconnectDelaysMs: [20, 20] });
+  const nas = (await dash.sessions("default")).find((s) => s.title === "Revisión del NAS")!;
+  let finished = 0;
+  void chat.send(nas.id, "default", "contame algo largo", [], () => finished++);
+  await until(() => /Dale/.test(assistantText(getRun(nas.id)?.stream.items ?? [])));
+  blocked = true;
+  (mock as unknown as { dropSockets: () => void }).dropSockets();
+  await until(() => finished === 1);
+  assert.ok(getRun(nas.id)!.stream.items.some((i) => i.kind === "notice" && /Se cortó la conexión/.test(i.text)));
+  chat.close();
+  // Let the detached turn on the mock run out before other tests use the session.
+  await new Promise((r) => setTimeout(r, 1500));
 });
 
 test("DashboardChat: model, effort, fast and yolo per session, with live info and a confirm for expensive models", async () => {
