@@ -5,7 +5,7 @@ import { contentImages, contentText, type Message, type StreamPayload } from "./
  * `/api/sessions/{id}/messages` and live SSE events both reduce into it.
  */
 export type ChatItem =
-  | { kind: "user"; key: string; text: string; images: string[] }
+  | { kind: "user"; key: string; text: string; images: string[]; /** A correction sent into a running turn. */ steer?: boolean }
   | {
       kind: "assistant";
       key: string;
@@ -273,6 +273,12 @@ export function applyStreamEvent(state: StreamState, name: string, p: StreamPayl
     }
     case "assistant.segment_end":
       return closeSegment(state);
+    case "user.steer": {
+      // Lands at the agent's next tool boundary, inside the running turn.
+      const s = closeSegment(state);
+      const text = typeof p.text === "string" ? p.text : "";
+      return text ? { ...s, items: [...s.items, { kind: "user", key: nextKey("st"), text, images: [], steer: true }] } : s;
+    }
     case "input.request": {
       const s = closeSegment(state);
       const method = p.method as "clarify" | "sudo" | "secret";

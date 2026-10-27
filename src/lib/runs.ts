@@ -68,6 +68,42 @@ export function useRunsVersion(): number {
   return useSyncExternalStore(subscribe, () => version);
 }
 
+// -- messages written while a turn runs, sent one by one after it --------------
+
+export interface Queued {
+  key: string;
+  text: string;
+  images: string[];
+}
+
+const queues = new Map<string, Queued[]>();
+let queuedN = 0;
+
+export function getQueue(sessionId: string | null): Queued[] {
+  return (sessionId && queues.get(sessionId)) || [];
+}
+
+export function enqueue(sessionId: string, text: string, images: string[]): Queued {
+  const item = { key: `q${++queuedN}`, text, images };
+  queues.set(sessionId, [...getQueue(sessionId), item]);
+  emit();
+  return item;
+}
+
+export function dropQueued(sessionId: string, key: string) {
+  const rest = getQueue(sessionId).filter((q) => q.key !== key);
+  if (rest.length) queues.set(sessionId, rest);
+  else queues.delete(sessionId);
+  emit();
+}
+
+/** The next queued message, removed from the queue. */
+export function takeQueued(sessionId: string): Queued | undefined {
+  const [next] = getQueue(sessionId);
+  if (next) dropQueued(sessionId, next.key);
+  return next;
+}
+
 // -- building blocks for a backend's run driver ---------------------------------
 
 /** Start a busy run showing the optimistic user message. */

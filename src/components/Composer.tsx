@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowUp, ImagePlus, Mic, Square, X } from "lucide-react";
+import { ArrowUp, CornerDownRight, ImagePlus, ListPlus, Mic, Square, X } from "lucide-react";
 import { Spinner } from "@/components/ds";
 import { cn } from "@/lib/utils";
 import { startRecording, type Recording } from "@/lib/voice";
@@ -31,6 +31,8 @@ export function Composer({
   toolbar,
   prefill,
   onSlashComplete,
+  onQueue,
+  onSteer,
 }: {
   busy: boolean;
   enterSends: boolean;
@@ -47,6 +49,10 @@ export function Composer({
   prefill?: { text: string; nonce: number };
   /** Completions for a `/command` draft; without it there is no autocomplete. */
   onSlashComplete?: (text: string) => Promise<{ items: SlashSuggestion[]; replaceFrom: number }>;
+  /** While busy: keep the message for after the running turn (Enter does this). */
+  onQueue?: (text: string, images: string[]) => void;
+  /** While busy: send the text into the running turn as a correction. */
+  onSteer?: (text: string) => void;
 }) {
   const [text, setText] = useState("");
   const [suggestions, setSuggestions] = useState<{ items: SlashSuggestion[]; replaceFrom: number } | null>(null);
@@ -135,13 +141,30 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, [text]);
 
-  const canSend = !busy && (text.trim().length > 0 || images.length > 0);
+  const hasDraft = text.trim().length > 0 || images.length > 0;
+  const canSend = !busy && hasDraft;
+  const canQueue = busy && hasDraft && Boolean(onQueue);
+  const canSteer = busy && Boolean(onSteer) && text.trim().length > 0 && images.length === 0;
 
-  function submit() {
-    if (!canSend) return;
-    onSend(text.trim(), images);
+  function clear() {
     setText("");
     setImages([]);
+  }
+
+  function submit() {
+    if (canQueue) {
+      onQueue!(text.trim(), images);
+      return clear();
+    }
+    if (!canSend) return;
+    onSend(text.trim(), images);
+    clear();
+  }
+
+  function steer() {
+    if (!canSteer) return;
+    onSteer!(text.trim());
+    clear();
   }
 
   function onKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
@@ -219,7 +242,7 @@ export function Composer({
           }}
         />
         {allowImages && (
-          <IconButton label="Adjuntar imagen" onClick={() => fileRef.current?.click()} disabled={busy}>
+          <IconButton label="Adjuntar imagen" onClick={() => fileRef.current?.click()} disabled={busy && !onQueue}>
             <ImagePlus />
           </IconButton>
         )}
@@ -233,7 +256,9 @@ export function Composer({
               ? `Escuchando… ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`
               : voice === "transcribing"
                 ? "Transcribiendo…"
-                : "Escribile a Hermes…"
+                : busy && onQueue
+                  ? "Escribí para después, o corregí el rumbo…"
+                  : "Escribile a Hermes…"
           }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
@@ -261,7 +286,17 @@ export function Composer({
             {voice === "transcribing" || voice === "starting" ? <Spinner /> : <Mic className="size-5" />}
           </button>
         )}
-        {busy ? (
+        {canSteer && (
+          <button
+            type="button"
+            onClick={steer}
+            title="La lee en el próximo paso, sin cortar la respuesta"
+            className="inline-flex min-h-11 shrink-0 items-center gap-1.5 border border-current/30 px-3 text-display text-xs font-bold tracking-[0.12em] text-midground hover:bg-midground/10 rounded-[var(--radius-md)]"
+          >
+            <CornerDownRight className="size-4" /> Corregir
+          </button>
+        )}
+        {busy && (
           <button
             type="button"
             aria-label="Detener"
@@ -270,19 +305,21 @@ export function Composer({
           >
             <Square className="size-4 fill-current" />
           </button>
-        ) : (
+        )}
+        {(!busy || canQueue) && (
           <button
             type="button"
-            aria-label="Enviar"
+            aria-label={busy ? "Enviar cuando termine" : "Enviar"}
+            title={busy ? "Se manda cuando Hermes termine de responder" : undefined}
             onClick={submit}
-            disabled={!canSend}
+            disabled={!canSend && !canQueue}
             className={cn(
               "inline-flex size-11 shrink-0 items-center justify-center rounded-[var(--radius-md)] transition-opacity",
               "bg-midground text-background-base shadow-[inset_-1px_-1px_0_0_#00000080,inset_1px_1px_0_0_#ffffff80]",
               "disabled:opacity-30",
             )}
           >
-            <ArrowUp className="size-5" />
+            {busy ? <ListPlus className="size-5" /> : <ArrowUp className="size-5" />}
           </button>
         )}
       </div>

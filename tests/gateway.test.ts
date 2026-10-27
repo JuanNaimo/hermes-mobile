@@ -298,7 +298,8 @@ test("DashboardChat: opening a session that is mid-turn follows it from the serv
   other.close();
 
   let changed = 0;
-  const chat = new DashboardChat(dash, { socketFactory: webSocket, onSessionsChanged: () => changed++ });
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  chat.onRunEnded((id) => id === ideas.id && changed++);
   await chat.attach(ideas.id, "tech-insider");
   const run = getRun(ideas.id)!;
   assert.ok(run.busy && run.resumed);
@@ -310,7 +311,7 @@ test("DashboardChat: opening a session that is mid-turn follows it from the serv
   await answerInput(ideas.id, card.key, { answers: { q1: "staging", q2: '["web"]' }, outcome: "submitted" }, "answered");
   await until(() => !getRun(ideas.id)!.busy, "turn finished");
   assert.match(assistantText(getRun(ideas.id)!.stream.items), /Deploy a \*\*staging\*\*; servicios: web/);
-  assert.ok(changed > 0, "the list refreshes when a picked-up turn ends");
+  assert.equal(changed, 1, "a picked-up turn reports its end");
   chat.close();
 });
 
@@ -361,6 +362,68 @@ test("DashboardChat: when the dashboard stays unreachable the turn ends with a n
   chat.close();
   // Let the detached turn on the mock run out before other tests use the session.
   await new Promise((r) => setTimeout(r, 1500));
+});
+
+test("DashboardChat: a correction steers the running turn; after it ends it becomes a normal message", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getRun } = await import("../src/lib/runs.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const id = await chat.create("default", "Correcciones");
+  let ended = 0;
+  chat.onRunEnded(() => ended++);
+  void chat.send(id, "default", "revisá el disco");
+  await until(() => /Dale/.test(assistantText(getRun(id)?.stream.items ?? [])));
+  assert.equal(await chat.steer(id, "default", "mirá solo /var"), "steered");
+  const steerItem = getRun(id)!.stream.items.find((i) => i.kind === "user" && i.steer);
+  assert.equal(steerItem?.kind === "user" && steerItem.text, "mirá solo /var");
+  await until(() => ended === 1);
+  assert.match(assistantText(getRun(id)!.stream.items), /Tomé tu corrección: "mirá solo \/var"/);
+  assert.equal(await chat.steer(id, "default", "tarde"), "queued", "no turn to steer");
+  chat.close();
+});
+
+test("DashboardChat: messages queued during a turn go out one by one; a stopped turn holds them", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getRun, enqueue, getQueue, stopRun } = await import("../src/lib/runs.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const id = await chat.create("default", "Cola");
+  let ended = 0;
+  chat.onRunEnded(() => ended++);
+  void chat.send(id, "default", "primero");
+  enqueue(id, "segundo", []);
+  enqueue(id, "tercero", []);
+  await until(() => ended === 3, "three turns");
+  assert.equal(getQueue(id).length, 0);
+  const users = (await dash.messages(id, "default")).filter((m) => m.role === "user").map((m) => m.content);
+  assert.deepEqual(users, ["primero", "segundo", "tercero"]);
+
+  void chat.send(id, "default", "cuarto");
+  enqueue(id, "quinto", []);
+  await until(() => /Dale/.test(assistantText(getRun(id)?.stream.items ?? [])));
+  await stopRun(id);
+  await until(() => ended === 4);
+  await new Promise((r) => setTimeout(r, 100));
+  assert.deepEqual(getQueue(id).map((q) => q.text), ["quinto"], "held after a stop");
+  assert.equal(getRun(id)!.busy, false);
+  chat.close();
+});
+
+test("DashboardChat: a turn the server starts on its own (its queue) is followed", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getRun } = await import("../src/lib/runs.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const id = await chat.create("default", "Cola del server");
+  const ended: string[] = [];
+  chat.onRunEnded(() => ended.push(assistantText(getRun(id)!.stream.items)));
+  void chat.send(id, "default", "uno");
+  await until(() => /Dale/.test(assistantText(getRun(id)?.stream.items ?? [])));
+  const rid = await chat.attach(id, "default");
+  // Like another client typing while busy: the gateway queues it.
+  assert.deepEqual(await chat.gateway.request("prompt.submit", { session_id: rid, text: "dos" }), { status: "queued" });
+  await until(() => ended.length === 2, "both turns");
+  assert.match(ended[1], /Recibí: _"dos"_/);
+  assert.ok(getRun(id)!.resumed);
+  chat.close();
 });
 
 test("DashboardChat: model, effort, fast and yolo per session, with live info and a confirm for expensive models", async () => {

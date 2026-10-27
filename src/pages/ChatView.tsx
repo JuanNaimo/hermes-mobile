@@ -4,11 +4,11 @@ import { ArrowDown, Ellipsis, GitBranch, Pencil, RefreshCw, Sparkles, Trash2, Wi
 import { useApp } from "@/store";
 import { ApiError } from "@/lib/api";
 import { historyToItems, type ChatItem } from "@/lib/transcript";
-import { answerApproval, answerInput, clearRun, getRun, startRun, stopRun, useRunsVersion } from "@/lib/runs";
+import { answerApproval, answerInput, clearRun, dropQueued, enqueue, getQueue, getRun, startRun, stopRun, useRunsVersion } from "@/lib/runs";
 import { ApprovalCard, AssistantMessage, InputCard, Notice, ToolActivity, UserMessage } from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
 import { SessionControls } from "@/components/SessionControls";
-import { ContextMeter, SessionMenu, TodoStrip, type SessionAction } from "@/components/SessionPanels";
+import { ContextMeter, QueueStrip, SessionMenu, TodoStrip, type SessionAction } from "@/components/SessionPanels";
 import type { NewSessionOptions } from "@/lib/dashboardChat";
 import { useLive } from "@/lib/sessionLive";
 import { EmptyState, IconButton, SectionLabel } from "@/components/ui";
@@ -106,15 +106,13 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     if (activeSessionId && !waitingForProfile) void loadHistory(activeSessionId, sessionProfile);
   }, [activeSessionId, sessionProfile, waitingForProfile, loadHistory]);
 
-  // A turn picked up from the server (opened mid-reply): reload so the stored
-  // part of it isn't shown twice, and again once it ends.
-  const resumed = Boolean(run?.resumed);
+  // A turn picked up from the server (opened mid-reply, or started elsewhere):
+  // reload so the part of it already stored isn't shown twice.
+  const resumedBusy = Boolean(run?.resumed && run.busy);
   useEffect(() => {
-    if (!resumed || !activeSessionId || waitingForProfile) return;
-    if (!busy) void refreshSessions();
-    if (busy || !endedWithNotice(activeSessionId)) void loadHistory(activeSessionId, sessionProfile);
+    if (resumedBusy && activeSessionId && !waitingForProfile) void loadHistory(activeSessionId, sessionProfile);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resumed, busy]);
+  }, [resumedBusy]);
 
   // A remembered session that no longer exists (deleted, other login).
   useEffect(() => {
@@ -228,11 +226,8 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     const sessionId = id;
     // `send` registers the live run synchronously, before any await.
     stopSpeaking();
-    void dc.send(sessionId, profile, text, images, () => {
-      speakFinishedTurn(sessionId);
-      void refreshSessions();
-      if (getActiveId() === sessionId && !endedWithNotice(sessionId)) void loadHistory(sessionId, profile);
-    });
+    // Its end is handled by the `onRunEnded` listener above.
+    void dc.send(sessionId, profile, text, images);
     if (!activeSessionId) setActiveSessionId(sessionId, profile);
   }
 
@@ -246,11 +241,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
       else if (out.kind === "prefill") setPrefill({ text: out.message, nonce: Date.now() });
       else {
         stopSpeaking();
-        void dc.send(sessionId, profile, out.message, [], () => {
-          speakFinishedTurn(sessionId);
-          void refreshSessions();
-          if (getActiveId() === sessionId && !endedWithNotice(sessionId)) void loadHistory(sessionId, profile);
-        });
+        void dc.send(sessionId, profile, out.message, []);
       }
       void refreshSessions();
     } catch (err) {
@@ -285,11 +276,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
       sessionId,
       profile,
       text ?? item.text,
-      () => {
-        speakFinishedTurn(sessionId);
-        void refreshSessions();
-        if (getActiveId() === sessionId && !endedWithNotice(sessionId)) void loadHistory(sessionId, profile);
-      },
+      undefined,
       Number.isFinite(rowId) ? rowId : undefined,
     );
   }
@@ -376,6 +363,38 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   const activeRef = useRef(activeSessionId);
   activeRef.current = activeSessionId;
   const getActiveId = () => activeRef.current;
+
+  // Dashboard turns end here, whoever started them: read the reply aloud,
+  // refresh the list and swap the live view for the stored transcript.
+  const onRunEndedRef = useRef<(id: string, profile: string) => void>(() => {});
+  onRunEndedRef.current = (id, profile) => {
+    speakFinishedTurn(id);
+    void refreshSessions();
+    if (getActiveId() === id && !endedWithNotice(id)) void loadHistory(id, profile);
+  };
+  useEffect(() => chat?.onRunEnded((id, profile) => onRunEndedRef.current(id, profile)), [chat]);
+
+  // -- writing while Hermes answers (dashboard) ----------------------------------
+  const queue = getQueue(activeSessionId);
+
+  async function steer(text: string) {
+    if (!chat || !activeSessionId || !sessionProfile) return;
+    try {
+      if ((await chat.steer(activeSessionId, sessionProfile, text)) === "queued") {
+        enqueue(activeSessionId, text, []);
+        notify("La respuesta ya no podía tomar la corrección: quedó para después.");
+      }
+    } catch (err) {
+      notify(err instanceof Error ? err.message : String(err), "error");
+    }
+  }
+
+  function sendQueuedNow(key: string) {
+    const item = queue.find((q) => q.key === key);
+    if (!item || !activeSessionId || !chat) return;
+    dropQueued(activeSessionId, key);
+    void sendDashboard(chat, item.text, item.images);
+  }
 
   async function rename() {
     if (!session || !client) return;
@@ -609,6 +628,14 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
             </p>
           )}
           {dashboardMode && <TodoStrip todos={live.todos} />}
+          {dashboardMode && activeSessionId && queue.length > 0 && (
+            <QueueStrip
+              items={queue}
+              busy={busy}
+              onDrop={(key) => dropQueued(activeSessionId, key)}
+              onSendNow={sendQueuedNow}
+            />
+          )}
           {editing && (
             <p className="mb-2 flex items-center gap-2 text-xs text-text-secondary">
               <Pencil className="size-3.5 shrink-0 text-midground" />
@@ -646,6 +673,8 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
             }
             enterSends={settings.enterSends}
             onSend={(t, imgs) => void send(t, imgs)}
+            onQueue={dashboardMode && activeSessionId ? (t, imgs) => enqueue(activeSessionId, t, imgs) : undefined}
+            onSteer={dashboardMode && activeSessionId ? (t) => void steer(t) : undefined}
             onTranscribe={dashboardMode ? transcribe : undefined}
             onError={(message) => notify(message, "error")}
             onStop={() =>

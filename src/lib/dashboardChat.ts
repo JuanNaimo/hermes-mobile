@@ -2,7 +2,7 @@ import type { DashboardClient } from "./dashboard.ts";
 import { GatewayClient, GatewayError, type GatewayEvent, type GatewayStatus, type ServerRequest } from "./gateway.ts";
 import { gatewayEventToStream, serverRequestToStream } from "./gatewayEvents.ts";
 import { normalizeModelOptions, type ModelOptions } from "./models.ts";
-import { beginRun, endRun, getRun, resetRunOutput, runEvent, type RunControls } from "./runs.ts";
+import { beginRun, endRun, getRun, resetRunOutput, runEvent, takeQueued, type RunControls } from "./runs.ts";
 import { adoptFences, forgetFences, getLive, mergeInfo, setTodos, setUsage } from "./sessionLive.ts";
 import type { SocketFactory } from "./socket.ts";
 
@@ -79,6 +79,7 @@ export class DashboardChat {
   /** runtime id → live events held back while its replay is in flight. */
   private readonly catchingUp = new Map<string, GatewayEvent[]>();
   private readonly onSessionsChanged?: () => void;
+  private readonly runEndedListeners = new Set<(storedId: string, profile: string) => void>();
   private closed = false;
   private readonly reconnectDelays: number[];
 
@@ -152,6 +153,11 @@ export class DashboardChat {
         mergeInfo(sid, { title: p.title });
         this.onSessionsChanged?.();
         break;
+    }
+    // A turn this app didn't send (another device, or the server's own queue): follow it.
+    if (event.type === "message.start" && !getRun(sid)?.busy) {
+      const profile = this.profiles.get(sid);
+      if (profile) this.follow(sid, profile, typeof p.text === "string" ? p.text : "");
     }
     if (!getRun(sid)?.busy) return;
     for (const [name, payload] of gatewayEventToStream(event)) runEvent(sid, name, payload);
@@ -267,6 +273,27 @@ export class DashboardChat {
     const done = this.finishers.get(storedId);
     this.finishers.delete(storedId);
     done?.();
+    const profile = this.profiles.get(storedId);
+    if (!profile) return;
+    this.runEndedListeners.forEach((l) => l(storedId, profile));
+    // Messages written meanwhile go out one by one. A stopped or failed turn holds
+    // them back: the person decides whether they still apply.
+    const run = getRun(storedId);
+    if (run?.busy || run?.stream.items.at(-1)?.kind === "notice") return;
+    const next = takeQueued(storedId);
+    if (next) void this.send(storedId, profile, next.text, next.images);
+  }
+
+  /** Every turn's end, whoever started it (this app, the queue, another device). */
+  onRunEnded(listener: (storedId: string, profile: string) => void): () => void {
+    this.runEndedListeners.add(listener);
+    return () => this.runEndedListeners.delete(listener);
+  }
+
+  /** Show a turn that started without this app sending it. */
+  private follow(storedId: string, profile: string, userText: string) {
+    beginRun(storedId, userText, [], this.controls(storedId, profile), { resumed: true });
+    this.finishers.set(storedId, () => {});
   }
 
   private remember(storedId: string, runtimeId: string, result: Record<string, unknown>, profile?: string) {
@@ -331,8 +358,7 @@ export class DashboardChat {
    */
   private adoptRunning(storedId: string, profile: string, res: ResumeResult) {
     if (!res.running || getRun(storedId)?.busy) return;
-    beginRun(storedId, res.inflight?.user ?? "", [], this.controls(storedId, profile), { resumed: true });
-    this.finishers.set(storedId, () => this.onSessionsChanged?.());
+    this.follow(storedId, profile, res.inflight?.user ?? "");
     this.restartFrom(storedId, res);
     this.deliverOpenRequests(storedId, res.open_requests);
   }
@@ -370,6 +396,26 @@ export class DashboardChat {
       runEvent(storedId, "error", { message: err instanceof Error ? err.message : String(err) });
       this.finish(storedId);
     }
+  }
+
+  /**
+   * A correction for the running turn: the agent reads it at its next tool
+   * boundary, without stopping. "queued" means it couldn't go in (the turn just
+   * ended, or this agent can't take corrections): send it as the next message.
+   */
+  async steer(storedId: string, profile: string, text: string): Promise<"steered" | "queued"> {
+    const rid = this.runtime.get(storedId);
+    if (!rid || !getRun(storedId)?.busy) return "queued";
+    try {
+      const res = await this.gateway.request<{ status?: string }>("session.steer", { session_id: rid, profile, text });
+      if (res?.status !== "queued") return "queued";
+    } catch (err) {
+      // 4010: the agent has no steer support.
+      if (err instanceof GatewayError && err.code === 4010) return "queued";
+      throw err;
+    }
+    runEvent(storedId, "user.steer", { text });
+    return "steered";
   }
 
   /**

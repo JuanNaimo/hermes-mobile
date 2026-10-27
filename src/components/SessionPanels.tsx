@@ -8,13 +8,17 @@ import {
   CircleDot,
   Download,
   GitBranch,
+  ListPlus,
+  Send,
   ListTodo,
   Pencil,
   Pin,
   PinOff,
   Trash2,
+  X,
   XCircle,
 } from "lucide-react";
+import type { Queued } from "@/lib/runs";
 import type { Todo, Usage } from "@/lib/sessionLive";
 import { cn } from "@/lib/utils";
 
@@ -198,5 +202,64 @@ export function TodoStrip({ todos }: { todos: Todo[] }) {
         </ul>
       )}
     </div>
+  );
+}
+
+// -- queue -----------------------------------------------------------------------------------
+
+/**
+ * Messages written while Hermes answered. They go out one by one when the turn
+ * ends; after a stopped or failed turn they wait here to be sent or dropped.
+ */
+export function QueueStrip({
+  items,
+  busy,
+  onDrop,
+  onSendNow,
+}: {
+  items: Queued[];
+  busy: boolean;
+  onDrop: (key: string) => void;
+  onSendNow: (key: string) => void;
+}) {
+  return (
+    <section aria-label="Mensajes en cola" className="mb-2 flex flex-col gap-1">
+      <p className="flex items-center gap-1.5 px-1 text-xs text-text-tertiary">
+        <ListPlus className="size-3.5" />
+        {busy ? "Se mandan cuando Hermes termine" : "En espera: la respuesta anterior no terminó bien"}
+      </p>
+      <ul className="flex flex-col gap-1">
+        {items.map((q, i) => (
+          <li
+            key={q.key}
+            className="flex min-h-11 items-center gap-2 border border-dashed border-current/25 bg-card/60 ps-3 backdrop-blur rounded-[var(--radius-md)]"
+          >
+            <span className="font-mono text-xs text-text-tertiary">{i + 1}</span>
+            <span className="min-w-0 flex-1 truncate text-sm text-midground">
+              {q.text || "Imagen"}
+              {q.images.length > 0 && q.text && <span className="text-text-tertiary"> · {q.images.length} imagen(es)</span>}
+            </span>
+            {!busy && i === 0 && (
+              <button
+                type="button"
+                onClick={() => onSendNow(q.key)}
+                aria-label="Enviar ahora"
+                className="inline-flex size-11 items-center justify-center text-midground hover:bg-midground/10 rounded-[var(--radius-md)]"
+              >
+                <Send className="size-4" />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => onDrop(q.key)}
+              aria-label={`Quitar de la cola: ${q.text || "imagen"}`}
+              className="inline-flex size-11 items-center justify-center text-text-tertiary hover:text-midground rounded-[var(--radius-md)]"
+            >
+              <X className="size-4" />
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }

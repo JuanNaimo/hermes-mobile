@@ -808,11 +808,25 @@ export function startMockDashboard({
         case "prompt.submit": {
           const s = live.get(params.session_id);
           if (!s) return fail(4004, "session not live");
-          if (s.running) return reply({ status: "queued" });
           const text = typeof params.text === "string" ? params.text : JSON.stringify(params.text);
+          // Busy: the gateway queues it as the next turn (busy_input_mode "queue").
+          if (s.running) {
+            s.queue = [...(s.queue ?? []), text];
+            return reply({ status: "queued" });
+          }
           reply({ status: "streaming" });
           void runTurn(params.session_id, s, text);
           return;
+        }
+        case "session.steer": {
+          const text = String(params.text ?? "").trim();
+          if (!text) return fail(4002, "text is required");
+          const s = live.get(params.session_id);
+          if (!s) return fail(4004, "session not live");
+          // An idle agent can't take a correction: the client sends it as a prompt.
+          if (!s.running) return reply({ status: "rejected", text });
+          s.steers = [...(s.steers ?? []), text];
+          return reply({ status: "queued", text });
         }
         case "session.events.since": {
           const sid = String(params.session_id ?? "");
@@ -942,6 +956,9 @@ export function startMockDashboard({
           row.message_count = rows.length;
         }
         event("message.complete", sid, { usage: { input_tokens: 120, output_tokens: 80 }, ...payload });
+        // The server's own queue drains into the next turn.
+        const next = s.queue?.shift();
+        if (next != null) setTimeout(() => void runTurn(sid, s, next), 50);
       };
       const interrupted = (partial) => finish({ text: partial, status: "interrupted" });
 
@@ -978,6 +995,9 @@ export function startMockDashboard({
         return res;
       };
       const notes = [];
+      // Corrections land at the tool boundary.
+      for (const steer of s.steers ?? []) notes.push(`Tomé tu corrección: "${steer}".`);
+      s.steers = [];
 
       if (/vault/i.test(text)) {
         // Not implemented by the app: must come back as -32601, not hang.

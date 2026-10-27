@@ -6,6 +6,7 @@ import {
   Check,
   ChevronRight,
   Copy,
+  CornerDownRight,
   Pencil,
   RotateCcw,
   Info,
@@ -34,11 +35,17 @@ export const UserMessage = memo(function UserMessage({
 }) {
   return (
     <div className="flex flex-col items-end gap-1 animate-rise">
+      {item.steer && (
+        <span className="flex items-center gap-1 text-xs text-text-tertiary">
+          <CornerDownRight className="size-3.5" /> Corrección durante la respuesta
+        </span>
+      )}
       <div
         className={cn(
           "max-w-[85%] sm:max-w-[75%] px-4 py-3",
           "bg-midground/10 border border-midground/15 text-midground",
           "rounded-[var(--radius-lg)] rounded-br-[var(--radius-sm)]",
+          item.steer && "border-dashed bg-transparent",
         )}
       >
         {item.images.length > 0 && (
