@@ -202,3 +202,12 @@ test("bots: platforms per profile, credentials, test, pairing and quick setups",
   assert.equal((await client.whatsappSetupStatus(wa.pairing_id)).status, "connected");
   assert.equal((await client.whatsappSetupApply(wa.pairing_id, "default")).ok, true);
 });
+
+test("restarting the gateway waits for the action and for the gateway to report running", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  const started = Date.now();
+  await client.restartGatewayAndWait("default", { everyMs: 20 });
+  assert.equal((await client.gatewayStatus("default")).gateway_running, true);
+  assert.ok(Date.now() - started >= 40, "polled until the action finished");
+  await assert.rejects(client.restartGatewayAndWait("default", { everyMs: 20, timeoutMs: 30 }), /no volvió a tiempo/);
+});

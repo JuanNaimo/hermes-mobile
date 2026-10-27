@@ -4,9 +4,8 @@ import { Search } from "lucide-react";
 import type { Skill, Toolset } from "@/lib/api";
 import { useApp } from "@/store";
 import { cn } from "@/lib/utils";
-import { PageTitle, Panel, SectionLabel } from "@/components/ui";
+import { PageShell, PageTitle, Panel, SectionLabel } from "@/components/ui";
 import { ProfileChips } from "@/components/ProfileChips";
-import { PageShell } from "./JobsPage";
 
 const PROVENANCE: Record<string, string> = {
   hub: "del hub",

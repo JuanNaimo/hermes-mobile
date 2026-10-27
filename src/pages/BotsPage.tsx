@@ -16,9 +16,8 @@ import {
   type WhatsAppSetup,
 } from "@/lib/messaging";
 import { cn } from "@/lib/utils";
-import { EmptyState, IconButton, PageTitle, Panel, SectionLabel } from "@/components/ui";
+import { EmptyState, IconButton, PageShell, PageTitle, Panel, SectionLabel } from "@/components/ui";
 import { ProfileChips } from "@/components/ProfileChips";
-import { PageShell } from "./JobsPage";
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -81,11 +80,10 @@ export function BotsPage({ leading }: { leading?: ReactNode }) {
   async function restart() {
     setRestarting(true);
     try {
-      await dash.restartGateway(profile);
+      await dash.restartGatewayAndWait(profile);
       setNeedsRestart(false);
-      notify("Reiniciando el gateway…");
-      // The new state shows once the gateway is back.
-      setTimeout(() => void load(), 6000);
+      notify("Gateway reiniciado");
+      void load();
     } catch (err) {
       notify(errorText(err), "error");
     } finally {

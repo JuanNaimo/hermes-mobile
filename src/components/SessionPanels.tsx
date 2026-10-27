@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Spinner } from "@/components/ds";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import {
   Archive,
@@ -202,6 +203,18 @@ export function TodoStrip({ todos }: { todos: Todo[] }) {
         </ul>
       )}
     </div>
+  );
+}
+
+// -- status ------------------------------------------------------------------------------
+
+/** What the agent is doing right now, above the composer while a turn runs. */
+export function StatusLine({ text }: { text: string }) {
+  return (
+    <p role="status" aria-live="polite" className="mb-2 flex min-h-6 items-center gap-2 px-1 text-xs text-text-secondary">
+      <Spinner />
+      <span className="min-w-0 truncate">{text}</span>
+    </p>
   );
 }
 

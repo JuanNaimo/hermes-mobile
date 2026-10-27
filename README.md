@@ -55,9 +55,16 @@ Se elige en **Servidor → Apariencia**.
 
 - **Usuario (dashboard, `:9119`)**: un solo login con usuario y contraseña que ve **todos
   los perfiles**, como la app de escritorio. Perfiles, sesiones, historial, chat (con
-  streaming, herramientas, aprobaciones, detener e imágenes adjuntas), las preguntas del
-  agente (`clarify`, contraseña de `sudo`, secretos), jobs de todos los perfiles y skills
-  con interruptor por perfil. Ver [`docs/dashboard-migration.md`](docs/dashboard-migration.md).
+  streaming, herramientas, aprobaciones, detener, imágenes, archivos y PDF adjuntos), las
+  preguntas del agente (`clarify`, contraseña de `sudo`, secretos), jobs de todos los
+  perfiles y skills con interruptor por perfil. Ver
+  [`docs/dashboard-migration.md`](docs/dashboard-migration.md).
+
+  Mientras Hermes responde podés seguir escribiendo: **Enter deja el mensaje en cola**
+  (sale solo cuando termina el turno) y **Corregir** lo mete en el turno actual sin
+  cortarlo. Una línea arriba del compositor dice qué está haciendo. Si se corta la
+  conexión a mitad de una respuesta, la app se reconecta y sigue desde donde quedó; abrir
+  una sesión que está respondiendo (por ejemplo desde otro dispositivo) la muestra en vivo.
 - **API key (API server, `:8642`)**: el modo original, completo, con una
   `API_SERVER_KEY` por perfil.
 
@@ -158,10 +165,11 @@ La config (`capacitor.config.ts`) sirve la app desde `http://localhost` en Andro
 puede hablar con un gateway HTTP en tu LAN. En iOS, si tu gateway no tiene TLS, agregá
 `NSAppTransportSecurity → NSAllowsLocalNetworking = YES` en `ios/App/App/Info.plist`.
 
-El dictado usa el micrófono desde la WebView: después de `cap add`, agregá
-`RECORD_AUDIO` y `MODIFY_AUDIO_SETTINGS` como `<uses-permission>` en
-`android/app/src/main/AndroidManifest.xml` (Capacitor pide el permiso al usarlo), y en
-iOS `NSMicrophoneUsageDescription` en `Info.plist`.
+El dictado usa el micrófono desde la WebView. `pnpm cap:android` y `pnpm cap:ios` corren
+`scripts/patch-native.mjs` después de `cap add`, que agrega `RECORD_AUDIO` y
+`MODIFY_AUDIO_SETTINGS` al `AndroidManifest.xml`, y en iOS `NSMicrophoneUsageDescription`
+y `NSAllowsLocalNetworking` al `Info.plist`. Si generaste `android/` o `ios/` a mano,
+corré `pnpm cap:patch` (no toca lo que ya está).
 
 Para compilar Android hace falta un JDK 21 (`JAVA_HOME`).
 
@@ -179,7 +187,9 @@ Hay un mock para cada modo:
   detener), jobs por perfil y skills con interruptor. Disparadores en el chat:
   "deploy"/"preguntá" abre una pregunta con opciones, "sudo"/"reiniciá" pide la
   contraseña de sudo (`hermes`), "token"/"clave" pide un secreto y "vault" manda un
-  pedido que la app rechaza. También aplica el chequeo de `Host`, de `Origin` y el CORS solo-localhost
+  pedido que la app rechaza. Además retoma un turno después de un corte
+  (`session.events.since`), acepta correcciones (`session.steer`), guarda archivos
+  adjuntos (`file.attach`) y simula el reinicio del gateway. También aplica el chequeo de `Host`, de `Origin` y el CORS solo-localhost
   del server real.
 
 ```bash
@@ -207,16 +217,19 @@ src/
 │   ├── socket.ts       # WebSocket nativo (plugin) o del navegador detrás de una interfaz
 │   ├── sse.ts          # parser SSE incremental (el stream es un POST, sin EventSource)
 │   ├── transcript.ts   # historial + eventos SSE → items del chat (reducer puro)
-│   └── runs.ts         # turnos en curso fuera de React (no se cortan al navegar)
+│   ├── activity.ts     # la línea "qué está haciendo" de un turno en curso
+│   ├── sessionLive.ts  # modelo, uso, todos y estado de cada sesión abierta
+│   └── runs.ts         # turnos en curso y la cola de mensajes, fuera de React
 ├── components/         # sidebar, composer, mensajes, markdown, primitivas táctiles
 │   └── ProfileChips.tsx# filtro de perfiles (sidebar, jobs, skills)
-plugins/native-websocket/  # plugin Capacitor local: WebSocket nativo sin Origin
-├── pages/              # Conexión, Chat, Jobs, Skills, Servidor
+├── pages/              # Conexión, Chat (y Jobs, Skills, Bots, Servidor con lazy())
 ├── themes/presets.ts   # paletas del dashboard (Hermes Teal, Midnight, Ember…)
 └── store.tsx           # conexión, ajustes, sesiones
+plugins/native-websocket/  # plugin Capacitor local: WebSocket nativo sin Origin
+scripts/patch-native.mjs   # permisos nativos que `cap add` no pone
 ```
 
 ```bash
-pnpm test          # parser SSE, reducer del chat y login del dashboard contra el mock
+pnpm test          # parser SSE, reducer del chat, cliente del dashboard y chat contra el mock
 pnpm typecheck
 ```

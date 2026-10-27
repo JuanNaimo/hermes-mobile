@@ -1,5 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Toast } from "@/components/ds";
+import { lazy, Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Spinner, Toast } from "@/components/ds";
 import { Menu, PanelLeftOpen } from "lucide-react";
 import { useApp } from "@/store";
 import { cn, loadJSON, saveJSON } from "@/lib/utils";
@@ -7,10 +7,12 @@ import { Sidebar } from "@/components/Sidebar";
 import { IconButton } from "@/components/ui";
 import { ConnectScreen } from "@/pages/ConnectScreen";
 import { ChatView } from "@/pages/ChatView";
-import { JobsPage } from "@/pages/JobsPage";
-import { SkillsPage } from "@/pages/SkillsPage";
-import { BotsPage } from "@/pages/BotsPage";
-import { ServerPage } from "@/pages/ServerPage";
+
+// Pages besides the chat load on first visit, to keep the startup bundle small.
+const JobsPage = lazy(() => import("@/pages/JobsPage").then((m) => ({ default: m.JobsPage })));
+const SkillsPage = lazy(() => import("@/pages/SkillsPage").then((m) => ({ default: m.SkillsPage })));
+const BotsPage = lazy(() => import("@/pages/BotsPage").then((m) => ({ default: m.BotsPage })));
+const ServerPage = lazy(() => import("@/pages/ServerPage").then((m) => ({ default: m.ServerPage })));
 
 /** Landscape tablets and up get a persistent sidebar; portrait gets a drawer. */
 const WIDE_QUERY = "(min-width: 1024px)";
@@ -144,13 +146,23 @@ export default function App() {
 
       <main className="relative z-10 flex min-h-0 min-w-0 flex-1 flex-col">
         {view === "chat" && <ChatView leading={leading} />}
-        {view === "jobs" && <JobsPage leading={leading} />}
-        {view === "skills" && <SkillsPage leading={leading} />}
-        {view === "bots" && <BotsPage leading={leading} />}
-        {view === "server" && <ServerPage leading={leading} />}
+        <Suspense fallback={<PageLoading />}>
+          {view === "jobs" && <JobsPage leading={leading} />}
+          {view === "skills" && <SkillsPage leading={leading} />}
+          {view === "bots" && <BotsPage leading={leading} />}
+          {view === "server" && <ServerPage leading={leading} />}
+        </Suspense>
       </main>
 
       <Toast toast={toast} />
+    </div>
+  );
+}
+
+function PageLoading() {
+  return (
+    <div className="flex flex-1 items-center justify-center text-text-tertiary" role="status" aria-label="Cargando">
+      <Spinner />
     </div>
   );
 }

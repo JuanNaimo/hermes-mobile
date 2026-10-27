@@ -165,6 +165,8 @@ export function startMockDashboard({
 
   /** Bots: per-profile platform switches and credentials, one shared pairing store. */
   const botState = new Map();
+  /** The last `/api/gateway/restart`: { polls, profile }. */
+  let restart = null;
   const bots = {
     tg: null,
     wa: null,
@@ -296,7 +298,11 @@ export function startMockDashboard({
       res.writeHead(200, { "Content-Type": "text/html" });
       return res.end("<!doctype html><title>Hermes · login</title><p>Mock login page</p>");
     }
-    if (path === "/api/status") return json(res, 200, { status: "ok", version: "0.22.4-mock", auth_required: true });
+    if (path === "/api/status") {
+      // Down while a restart action runs.
+      const down = Boolean(restart && restart.polls < 3);
+      return json(res, 200, { status: "ok", version: "0.22.4-mock", auth_required: true, gateway_running: !down, gateway_state: down ? "starting" : "running" });
+    }
     if (path === "/api/auth/providers") {
       return json(res, 200, {
         providers: [
@@ -519,7 +525,15 @@ export function startMockDashboard({
         bots.pairing.pending = [];
         return json(res, 200, { ok: true, cleared });
       }
-      if (path === "/api/gateway/restart" && req.method === "POST") return json(res, 200, { ok: true, pid: 4242, name: "gateway-restart" });
+      if (path === "/api/gateway/restart" && req.method === "POST") {
+        // Running for a couple of polls, then the gateway is back.
+        restart = { polls: 0, profile: q.get("profile") || "default" };
+        return json(res, 200, { ok: true, pid: 4242, name: "gateway-restart" });
+      }
+      if (path === "/api/actions/gateway-restart/status") {
+        const running = Boolean(restart && ++restart.polls < 3);
+        return json(res, 200, { name: "gateway-restart", running, exit_code: restart && !running ? 0 : null, pid: 4242, lines: ["Restarting gateway…", ...(running ? [] : ["✓ Gateway restarted"])] });
+      }
       if (path === "/api/messaging/telegram/onboarding/start" && req.method === "POST") {
         bots.tg = { id: token().slice(0, 12), polls: 0 };
         return json(res, 200, {
@@ -995,8 +1009,11 @@ export function startMockDashboard({
       event("message.delta", sid, { text: null });
 
       const callId = `call_${++requestN}`;
+      event("status.update", sid, { kind: "status", text: "Consultando el servidor…" });
       event("tool.start", sid, { tool_id: callId, name: "terminal", args: { command: "uptime" } });
       await sleep(400);
+      // server._status_update(sid, "ready"): the kind doubles as the text.
+      event("status.update", sid, { kind: "status", text: "ready" });
       if (s.interrupted) return interrupted(intro);
       event("tool.complete", sid, { tool_id: callId, name: "terminal", args: { command: "uptime" }, duration_s: 0.4, result: { output: "21:14 up 12 days, load average: 0.42", exit_code: 0 }, summary: "up 12 days, load 0.42" });
       push({ role: "assistant", content: intro, tool_calls: [{ id: callId, type: "function", function: { name: "terminal", arguments: '{"command":"uptime"}' } }] });

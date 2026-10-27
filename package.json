@@ -8,10 +8,11 @@
     "build": "tsc --noEmit -p . && vite build",
     "preview": "vite preview --host",
     "typecheck": "tsc --noEmit -p .",
-    "test": "node --experimental-strip-types --test tests/sse.test.ts tests/transcript.test.ts tests/dashboard.test.ts tests/gateway.test.ts tests/voice.test.ts",
+    "test": "node --experimental-strip-types --test tests/sse.test.ts tests/transcript.test.ts tests/dashboard.test.ts tests/gateway.test.ts tests/voice.test.ts tests/native.test.ts",
     "mock": "node scripts/mock-server.mjs",
-    "cap:android": "pnpm build && cap add android; cap sync android && cap open android",
-    "cap:ios": "pnpm build && cap add ios; cap sync ios && cap open ios",
+    "cap:android": "pnpm build && cap add android; node scripts/patch-native.mjs && cap sync android && cap open android",
+    "cap:ios": "pnpm build && cap add ios; node scripts/patch-native.mjs && cap sync ios && cap open ios",
+    "cap:patch": "node scripts/patch-native.mjs",
     "mock:dashboard": "node scripts/mock-dashboard.mjs"
   },
   "dependencies": {

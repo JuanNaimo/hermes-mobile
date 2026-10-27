@@ -51,8 +51,15 @@ export interface Todo {
   status: TodoStatus;
 }
 
+/** The gateway's transient status line (`status.update`): what the agent is doing right now. */
+export interface LiveStatus {
+  kind: string;
+  text: string;
+}
+
 export interface LiveSession {
   info: LiveInfo;
+  status?: LiveStatus | null;
   usage: Usage | null;
   todos: Todo[];
   todoRevision: number;
@@ -101,6 +108,12 @@ export function mergeInfo(storedId: string, raw: Record<string, unknown> | null 
   for (const key of INFO_KEYS) if (key in raw) (picked as Record<string, unknown>)[key] = raw[key];
   const usage = raw.usage && typeof raw.usage === "object" ? (raw.usage as Usage) : undefined;
   update(storedId, (s) => ({ ...s, info: { ...s.info, ...picked }, usage: usage ?? s.usage }));
+}
+
+export function setStatus(storedId: string, status: LiveStatus | null) {
+  const cur = getLive(storedId).status;
+  if (cur?.kind === status?.kind && cur?.text === status?.text) return;
+  update(storedId, (s) => ({ ...s, status }));
 }
 
 export function setUsage(storedId: string, usage: unknown) {

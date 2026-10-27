@@ -4,7 +4,7 @@ import { gatewayEventToStream, serverRequestToStream } from "./gatewayEvents.ts"
 import { splitFileRefs } from "./transcript.ts";
 import { normalizeModelOptions, type ModelOptions } from "./models.ts";
 import { beginRun, endRun, getRun, resetRunOutput, runEvent, takeQueued, type FileAttachment, type RunControls } from "./runs.ts";
-import { adoptFences, forgetFences, getLive, mergeInfo, setTodos, setUsage } from "./sessionLive.ts";
+import { adoptFences, forgetFences, getLive, mergeInfo, setStatus, setTodos, setUsage } from "./sessionLive.ts";
 import type { SocketFactory } from "./socket.ts";
 
 /** Model and effort for a chat that doesn't exist yet: they ride on `session.create`. */
@@ -149,7 +149,18 @@ export class DashboardChat {
         break;
       case "message.complete":
         setUsage(sid, p.usage);
+        setStatus(sid, null);
         break;
+      case "message.start":
+        setStatus(sid, null);
+        break;
+      case "status.update": {
+        // `_status_update(sid, "ready")` arrives as {kind: "status", text: "ready"}: the phase ended.
+        const kind = String(p.kind ?? "status");
+        const text = typeof p.text === "string" ? p.text.trim() : "";
+        setStatus(sid, !text || kind === "ready" || text === "ready" ? null : { kind, text });
+        break;
+      }
       case "session.title":
         mergeInfo(sid, { title: p.title });
         this.onSessionsChanged?.();
@@ -271,6 +282,7 @@ export class DashboardChat {
 
   private finish(storedId: string) {
     endRun(storedId);
+    setStatus(storedId, null);
     const done = this.finishers.get(storedId);
     this.finishers.delete(storedId);
     done?.();

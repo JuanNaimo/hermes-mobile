@@ -20,7 +20,8 @@ import {
 import { ApprovalCard, AssistantMessage, InputCard, Notice, ToolActivity, UserMessage } from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
 import { SessionControls } from "@/components/SessionControls";
-import { ContextMeter, QueueStrip, SessionMenu, TodoStrip, type SessionAction } from "@/components/SessionPanels";
+import { ContextMeter, QueueStrip, SessionMenu, StatusLine, TodoStrip, type SessionAction } from "@/components/SessionPanels";
+import { describeActivity } from "@/lib/activity";
 import type { NewSessionOptions } from "@/lib/dashboardChat";
 import { useLive } from "@/lib/sessionLive";
 import { EmptyState, IconButton, SectionLabel } from "@/components/ui";
@@ -641,6 +642,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
               <span>{chatStatus.detail} Se reconecta al enviar.</span>
             </p>
           )}
+          {busy && run && <StatusLine text={describeActivity(run.stream.items, live.status)} />}
           {dashboardMode && <TodoStrip todos={live.todos} />}
           {dashboardMode && activeSessionId && queue.length > 0 && (
             <QueueStrip

@@ -452,6 +452,45 @@ export class DashboardClient {
     return this.request(`/api/gateway/restart?${new URLSearchParams({ profile })}`, { method: "POST" });
   }
 
+  /** A background `hermes …` action the dashboard spawned (`gateway-restart`, …). */
+  actionStatus(name: string): Promise<{ running: boolean; exit_code: number | null; lines?: string[] }> {
+    return this.request(`/api/actions/${encodeURIComponent(name)}/status?lines=20`);
+  }
+
+  /** The gateway's liveness for a profile (`/api/status`, public). */
+  gatewayStatus(profile: string): Promise<{ gateway_running?: boolean; gateway_state?: string | null }> {
+    return this.request(`/api/status?${new URLSearchParams({ profile })}`);
+  }
+
+  /**
+   * Restart the profile's gateway and resolve once it's back: the restart
+   * action has exited and the gateway reports running. Throws with the action's
+   * last log line when it fails, or after `timeoutMs`.
+   */
+  async restartGatewayAndWait(profile: string, opts: { timeoutMs?: number; everyMs?: number } = {}) {
+    const { timeoutMs = 90_000, everyMs = 1500 } = opts;
+    await this.restartGateway(profile);
+    const deadline = Date.now() + timeoutMs;
+    const pause = () => new Promise((r) => setTimeout(r, everyMs));
+    let actionDone = false;
+    while (Date.now() < deadline) {
+      await pause();
+      if (!actionDone) {
+        const action = await this.actionStatus("gateway-restart").catch(() => null);
+        if (action?.running) continue;
+        if (action && action.exit_code != null && action.exit_code !== 0) {
+          const last = action.lines?.filter((l) => l.trim()).at(-1);
+          throw new Error(`El reinicio del gateway falló${last ? `: ${last}` : ""}`);
+        }
+        actionDone = true;
+      }
+      // The dashboard itself may blink while the gateway comes back: keep polling.
+      const status = await this.gatewayStatus(profile).catch(() => null);
+      if (status?.gateway_running) return;
+    }
+    throw new Error("El gateway no volvió a tiempo; revisalo en el servidor.");
+  }
+
   telegramSetupStart(botName?: string): Promise<TelegramSetup> {
     return this.request("/api/messaging/telegram/onboarding/start", { method: "POST", json: { bot_name: botName || null } });
   }

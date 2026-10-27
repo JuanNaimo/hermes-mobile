@@ -7,8 +7,7 @@ import { formatDate } from "@/lib/utils";
 import { useApp, useClient } from "@/store";
 import { THEMES, type TextSize } from "@/themes/presets";
 import { cn } from "@/lib/utils";
-import { IconButton, PageTitle, Panel, SectionLabel, StatusDot } from "@/components/ui";
-import { PageShell } from "./JobsPage";
+import { IconButton, PageShell, PageTitle, Panel, SectionLabel, StatusDot } from "@/components/ui";
 
 interface Readiness {
   status?: string;

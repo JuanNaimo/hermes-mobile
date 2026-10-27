@@ -89,3 +89,17 @@ test("@file: refs at the start of a user message become file chips", async () =>
   const [item] = historyToItems([{ id: 7, role: "user", content: "@file:attachments/a.csv" }]);
   assert.ok(item.kind === "user" && item.text === "" && item.files?.[0] === "a.csv" && item.fileRefs?.[0] === "@file:attachments/a.csv");
 });
+
+test("the status line says what the running turn is doing", async () => {
+  const { describeActivity } = await import("../src/lib/activity.ts");
+  const user = { kind: "user" as const, key: "u", text: "hola", images: [] };
+  assert.equal(describeActivity([user]), "Trabajando…");
+  assert.equal(describeActivity([user, { kind: "assistant", key: "a", text: "", reasoning: "mmm", streaming: true }]), "Pensando…");
+  assert.equal(describeActivity([user, { kind: "assistant", key: "a", text: "Dale", reasoning: "", streaming: true }]), "Escribiendo…");
+  const tool = { kind: "tool" as const, key: "t", name: "web_search", args: "", result: "", status: "running" as const };
+  assert.equal(describeActivity([user, tool]), "Buscando en la web…");
+  assert.equal(describeActivity([user, { ...tool, name: "mcp_github" }]), "Usando mcp_github…");
+  const card = { kind: "input" as const, key: "i", rpcId: 1, method: "sudo" as const };
+  assert.equal(describeActivity([user, tool, card]), "Esperando tu respuesta");
+  assert.equal(describeActivity([user, tool], { kind: "compacting", text: "Resumiendo el contexto…" }), "Resumiendo el contexto…");
+});

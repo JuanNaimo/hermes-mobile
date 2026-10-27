@@ -497,7 +497,13 @@ test("DashboardChat: usage and todos arrive with a turn; retry replaces the last
   let changed = 0;
   const chat = new DashboardChat(dash, { socketFactory: webSocket, onSessionsChanged: () => changed++ });
   const id = await chat.create("default", "Plan");
+  const seen: (string | undefined)[] = [];
+  const stopWatching = chat.gateway.on(() => seen.push(getLive(id).status?.text));
   await new Promise<void>((resolve) => void chat.send(id, "default", "armá un plan", [], resolve));
+  stopWatching();
+  assert.ok(seen.includes("Consultando el servidor…"), "status.update shows");
+  assert.ok(!seen.includes("ready"), "\"ready\" clears the line instead of showing");
+  assert.equal(getLive(id).status, null, "cleared when the turn ends");
   assert.equal(getLive(id).todos.length, 3);
   assert.equal(getLive(id).todos.find((t) => t.status === "in_progress")?.content, "Mirar el uso de disco");
   assert.equal(getLive(id).usage?.context_percent, 4.5);

@@ -5,7 +5,7 @@ import type { HermesClient, Job } from "@/lib/api";
 import type { DashboardClient } from "@/lib/dashboard";
 import { useApp } from "@/store";
 import { formatDate } from "@/lib/utils";
-import { EmptyState, IconButton, PageTitle, Panel, SectionLabel, TextField } from "@/components/ui";
+import { EmptyState, IconButton, PageShell, PageTitle, Panel, SectionLabel, TextField } from "@/components/ui";
 import { ProfileChips } from "@/components/ProfileChips";
 
 type JobAction = "pause" | "resume" | "run";
@@ -265,20 +265,5 @@ function NewJobForm({
         </Button>
       </form>
     </Panel>
-  );
-}
-
-export function PageShell({ leading, children }: { leading?: ReactNode; children: ReactNode }) {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {leading && (
-        <div className="flex h-14 shrink-0 items-center border-b border-current/20 px-2">{leading}</div>
-      )}
-      <div className="scroll-area min-h-0 flex-1">
-        <div className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-4 pt-6 pb-[calc(var(--safe-bottom)+2rem)] sm:px-8">
-          {children}
-        </div>
-      </div>
-    </div>
   );
 }
