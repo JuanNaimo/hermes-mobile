@@ -28,11 +28,14 @@ export type GatewayStatus = "idle" | "connecting" | "open" | "closed";
 
 export class GatewayError extends Error {
   readonly code: number | string;
+  /** The JSON-RPC error's `data` (fence refusals name the session's current revision there). */
+  readonly data?: Record<string, unknown>;
 
-  constructor(message: string, code: number | string) {
+  constructor(message: string, code: number | string, data?: Record<string, unknown>) {
     super(message);
     this.name = "GatewayError";
     this.code = code;
+    this.data = data;
   }
 }
 
@@ -73,6 +76,7 @@ export class GatewayClient {
   private readonly disconnectListeners = new Set<(reason: string) => void>();
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private closedByUs = false;
+  private readyPayload: Record<string, unknown> = {};
 
   constructor(opts: GatewayOptions) {
     this.opts = opts;
@@ -80,6 +84,15 @@ export class GatewayClient {
 
   get state(): GatewayStatus {
     return this.status;
+  }
+
+  /**
+   * The dashboard is hosted by the gateway's session authority (`gateway.ready`
+   * says so): session edits then go through revision-fenced `session.mutate`
+   * instead of the legacy setters. Known once connected.
+   */
+  get sessionAuthority(): boolean {
+    return this.readyPayload.session_authority === true;
   }
 
   /** Subscribe to events; returns the unsubscribe function. */
@@ -163,6 +176,7 @@ export class GatewayClient {
           }
           if (!ready && msg.method === "event" && (msg.params as GatewayEvent | undefined)?.type === "gateway.ready") {
             ready = true;
+            this.readyPayload = (msg.params as GatewayEvent).payload ?? {};
             this.setStatus("open");
             this.startPing();
             this.request("client.capabilities", { server_requests: true }).then(
@@ -218,8 +232,8 @@ export class GatewayClient {
       if (!p) return;
       this.pending.delete(msg.id);
       clearTimeout(p.timer);
-      const error = msg.error as { code?: number; message?: string } | undefined;
-      if (error) p.reject(new GatewayError(error.message || "Error del gateway", error.code ?? "rpc_error"));
+      const error = msg.error as { code?: number; message?: string; data?: Record<string, unknown> } | undefined;
+      if (error) p.reject(new GatewayError(error.message || "Error del gateway", error.code ?? "rpc_error", error.data));
       else p.resolve(msg.result);
     }
   }

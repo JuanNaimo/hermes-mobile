@@ -1,6 +1,17 @@
 import { findCookie, httpRequest, isNativeApp, type HttpRequest, type HttpResponse } from "./http.ts";
 import { sha256 } from "./sha256.ts";
 import type { Job, Message, Session, Skill, Toolset } from "./api.ts";
+import { normalizeModelOptions, type ModelOptions } from "./models.ts";
+import type {
+  MessagingPlatform,
+  PairedUser,
+  PairingRequest,
+  PlatformTest,
+  SetupApplied,
+  TelegramSetup,
+  TelegramSetupStatus,
+  WhatsAppSetup,
+} from "./messaging.ts";
 
 /**
  * Client for the Hermes dashboard (`hermes dashboard`, default port 9119):
@@ -329,6 +340,186 @@ export class DashboardClient {
       `/api/sessions/${encodeURIComponent(sessionId)}/messages?${q}`,
     );
     return res?.messages ?? [];
+  }
+
+  // -- models (hermes_cli/web_routers/models.py) ------------------------------------
+
+  /** The profile's model catalog, for a chat that has no session yet. */
+  async modelOptions(profile: string): Promise<ModelOptions> {
+    const q = new URLSearchParams({ profile, explicit_only: "true" });
+    return normalizeModelOptions(await this.request(`/api/model/options?${q}`));
+  }
+
+  // -- session edits (hermes_cli/web_routers/sessions.py) ---------------------------
+  // Fenced like the desktop's: read the session's runtime revision/generation,
+  // present them with a fresh request id. Unfenced edits get 409.
+
+  private async fence(id: string, profile: string): Promise<Record<string, string>> {
+    const snap = await this.request<{ exists?: boolean; runtime_revision?: number; runtime_generation?: number }>(
+      `/api/sessions/${encodeURIComponent(id)}/mutation-snapshot?${new URLSearchParams({ profile })}`,
+    );
+    const fence: Record<string, string> = { request_id: globalThis.crypto.randomUUID() };
+    if (snap?.exists) {
+      if (snap.runtime_revision != null) fence.expected_revision = String(snap.runtime_revision);
+      if (snap.runtime_generation != null) fence.expected_generation = String(snap.runtime_generation);
+    }
+    return fence;
+  }
+
+  /** Rename, pin, archive or mark read. Archiving also unpins, as the desktop does. */
+  async updateSession(
+    id: string,
+    profile: string,
+    patch: { title?: string; pinned?: boolean; archived?: boolean; unread?: boolean },
+  ): Promise<void> {
+    const fence = await this.fence(id, profile);
+    const json: Record<string, unknown> = { profile, request_id: fence.request_id, ...patch };
+    if (patch.archived) json.pinned = false;
+    if (fence.expected_revision) json.expected_revision = Number(fence.expected_revision);
+    if (fence.expected_generation) json.expected_generation = Number(fence.expected_generation);
+    await this.request(`/api/sessions/${encodeURIComponent(id)}`, { method: "PATCH", json });
+  }
+
+  async deleteSession(id: string, profile: string): Promise<void> {
+    const q = new URLSearchParams({ profile, ...(await this.fence(id, profile)) });
+    await this.request(`/api/sessions/${encodeURIComponent(id)}?${q}`, { method: "DELETE" });
+  }
+
+  /** The session and its messages as JSON, for saving or sharing. */
+  async exportSession(id: string, profile: string): Promise<string> {
+    const data = await this.request<unknown>(
+      `/api/sessions/${encodeURIComponent(id)}/export?${new URLSearchParams({ profile })}`,
+    );
+    return typeof data === "string" ? data : JSON.stringify(data, null, 2);
+  }
+
+  // -- bots (hermes_cli/web_routers/messaging.py, pairing in ops.py) -------------------
+
+  async messagingPlatforms(profile: string): Promise<MessagingPlatform[]> {
+    const res = await this.request<{ platforms?: MessagingPlatform[] }>(
+      `/api/messaging/platforms?${new URLSearchParams({ profile })}`,
+    );
+    return Array.isArray(res?.platforms) ? res.platforms : [];
+  }
+
+  /**
+   * Turn a platform on/off and set or clear its credentials. Blank values are
+   * skipped by the server (it keeps what it has); `hot_served` means the
+   * gateway picked the change up without a restart.
+   */
+  async updatePlatform(
+    id: string,
+    profile: string,
+    patch: { enabled?: boolean; env?: Record<string, string>; clear_env?: string[] },
+  ): Promise<{ hot_served?: boolean }> {
+    return this.request(`/api/messaging/platforms/${encodeURIComponent(id)}?${new URLSearchParams({ profile })}`, {
+      method: "PUT",
+      json: { env: {}, clear_env: [], ...patch, profile },
+    });
+  }
+
+  testPlatform(id: string, profile: string): Promise<PlatformTest> {
+    return this.request(`/api/messaging/platforms/${encodeURIComponent(id)}/test?${new URLSearchParams({ profile })}`, {
+      method: "POST",
+    });
+  }
+
+  async pairing(profile: string): Promise<{ pending: PairingRequest[]; approved: PairedUser[] }> {
+    const res = await this.request<{ pending?: PairingRequest[]; approved?: PairedUser[] }>(
+      `/api/pairing?${new URLSearchParams({ profile })}`,
+    );
+    return { pending: res?.pending ?? [], approved: res?.approved ?? [] };
+  }
+
+  /** Approve a listed request (`request_id`) or the one-time code a user relayed. */
+  approvePairing(profile: string, platform: string, target: { request_id?: string; code?: string }) {
+    return this.request<{ ok: boolean; user?: PairedUser }>("/api/pairing/approve", {
+      method: "POST",
+      json: { platform, profile, request_id: target.request_id ?? "", code: target.code ?? "" },
+    });
+  }
+
+  revokePairing(profile: string, platform: string, userId: string) {
+    return this.request("/api/pairing/revoke", { method: "POST", json: { platform, user_id: userId, profile } });
+  }
+
+  clearPendingPairing(profile: string) {
+    return this.request(`/api/pairing/clear-pending?${new URLSearchParams({ profile })}`, { method: "POST" });
+  }
+
+  /** Restart the profile's gateway so platform changes take effect. */
+  restartGateway(profile: string) {
+    return this.request(`/api/gateway/restart?${new URLSearchParams({ profile })}`, { method: "POST" });
+  }
+
+  telegramSetupStart(botName?: string): Promise<TelegramSetup> {
+    return this.request("/api/messaging/telegram/onboarding/start", { method: "POST", json: { bot_name: botName || null } });
+  }
+
+  telegramSetupStatus(pairingId: string): Promise<TelegramSetupStatus> {
+    return this.request(`/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`);
+  }
+
+  telegramSetupApply(pairingId: string, profile: string, allowedUserIds: string[]): Promise<SetupApplied> {
+    return this.request(
+      `/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}/apply?${new URLSearchParams({ profile })}`,
+      { method: "POST", json: { allowed_user_ids: allowedUserIds, profile } },
+    );
+  }
+
+  telegramSetupCancel(pairingId: string) {
+    return this.request(`/api/messaging/telegram/onboarding/${encodeURIComponent(pairingId)}`, { method: "DELETE" });
+  }
+
+  whatsappSetupStart(
+    profile: string,
+    opts: { mode: "bot" | "self-chat"; allowed_users?: string; reset_session?: boolean },
+  ): Promise<WhatsAppSetup> {
+    return this.request(`/api/messaging/whatsapp/onboarding/start?${new URLSearchParams({ profile })}`, {
+      method: "POST",
+      json: { ...opts, profile },
+    });
+  }
+
+  whatsappSetupStatus(pairingId: string): Promise<WhatsAppSetup> {
+    return this.request(`/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`);
+  }
+
+  whatsappSetupApply(
+    pairingId: string,
+    profile: string,
+    opts: { mode?: string; allowed_users?: string } = {},
+  ): Promise<SetupApplied> {
+    return this.request(
+      `/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}/apply?${new URLSearchParams({ profile })}`,
+      { method: "POST", json: { ...opts, profile } },
+    );
+  }
+
+  whatsappSetupCancel(pairingId: string) {
+    return this.request(`/api/messaging/whatsapp/onboarding/${encodeURIComponent(pairingId)}`, { method: "DELETE" });
+  }
+
+  // -- audio (hermes_cli/web_routers/audio.py) -------------------------------------
+  // The REST pair the desktop falls back to: the streaming sockets carry binary
+  // frames, which the native socket plugin doesn't.
+
+  /** Speech to text. An empty transcript means no speech was heard (not an error). */
+  async transcribe(dataUrl: string, mimeType: string, profile?: string): Promise<string> {
+    const q = profile ? `?${new URLSearchParams({ profile })}` : "";
+    const res = await this.request<{ transcript?: string }>(`/api/audio/transcribe${q}`, {
+      method: "POST",
+      json: { data_url: dataUrl, mime_type: mimeType },
+    });
+    return (res?.transcript ?? "").trim();
+  }
+
+  /** Text to speech with the profile's configured provider; returns a playable data URL. */
+  async speak(text: string, profile?: string): Promise<string> {
+    const q = profile ? `?${new URLSearchParams({ profile })}` : "";
+    const res = await this.request<{ data_url?: string }>(`/api/audio/speak${q}`, { method: "POST", json: { text } });
+    if (!res?.data_url) throw new DashboardError("El servidor no devolvió audio", 0, "no_audio");
+    return res.data_url;
   }
 
   // -- cron jobs (hermes_cli/web_routers/cron.py) ---------------------------------

@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Spinner } from "@/components/ds";
-import { ArrowDown, GitBranch, Pencil, RefreshCw, Sparkles, Trash2, WifiOff } from "lucide-react";
+import { ArrowDown, Ellipsis, GitBranch, Pencil, RefreshCw, Sparkles, Trash2, WifiOff, X } from "lucide-react";
 import { useApp } from "@/store";
 import { ApiError } from "@/lib/api";
 import { historyToItems, type ChatItem } from "@/lib/transcript";
 import { answerApproval, answerInput, clearRun, getRun, startRun, stopRun, useRunsVersion } from "@/lib/runs";
 import { ApprovalCard, AssistantMessage, InputCard, Notice, ToolActivity, UserMessage } from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
+import { SessionControls } from "@/components/SessionControls";
+import { ContextMeter, SessionMenu, TodoStrip, type SessionAction } from "@/components/SessionPanels";
+import type { NewSessionOptions } from "@/lib/dashboardChat";
+import { useLive } from "@/lib/sessionLive";
 import { EmptyState, IconButton, SectionLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
+import { isNativeApp } from "@/lib/http";
+import { blobToDataUrl, speak, stopSpeaking } from "@/lib/voice";
 
 const SUGGESTIONS = [
   "¿Qué podés hacer en este servidor?",
@@ -20,6 +26,7 @@ const SUGGESTIONS = [
 export function ChatView({ leading }: { leading?: ReactNode }) {
   const {
     client,
+    dashboard,
     chat,
     chatStatus,
     loadMessages,
@@ -46,6 +53,15 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   const targetProfile = newChatProfile ?? defaultProfile;
   const run = getRun(activeSessionId);
   const busy = Boolean(run?.busy);
+  const live = useLive(activeSessionId);
+  /** Model and effort picked for a chat that doesn't exist yet. */
+  const [newChatOptions, setNewChatOptions] = useState<NewSessionOptions>({});
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number } | undefined>();
+  /** The composer holds an edit of the last user message: sending runs it again. */
+  const [editing, setEditing] = useState(false);
+  /** Output of slash commands run here, shown under the transcript until the next reload. */
+  const [slashNotes, setSlashNotes] = useState<ChatItem[]>([]);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const [history, setHistory] = useState<ChatItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -85,6 +101,8 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   useEffect(() => {
     setHistory([]);
     setLoadError(null);
+    setSlashNotes([]);
+    setEditing(false);
     if (activeSessionId && !waitingForProfile) void loadHistory(activeSessionId, sessionProfile);
   }, [activeSessionId, sessionProfile, waitingForProfile, loadHistory]);
 
@@ -96,7 +114,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   // -- scrolling -------------------------------------------------------------
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pinned, setPinned] = useState(true);
-  const items = [...history, ...(run?.stream.items ?? [])];
+  const items = [...history, ...(run?.stream.items ?? []), ...slashNotes];
   const lastLen = items.length;
   const lastText = (() => {
     const last = items[items.length - 1];
@@ -119,6 +137,38 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     setPinned(true);
   }
+
+  // -- voice (dashboard mode: the dashboard transcribes and synthesizes) --------
+  const voiceProfile = sessionProfile ?? targetProfile;
+
+  const transcribe = dashboard
+    ? async (clip: Blob) => dashboard.transcribe(await blobToDataUrl(clip), clip.type.split(";")[0] || "audio/webm", voiceProfile)
+    : undefined;
+
+  const speakReply = useCallback(
+    (key: string, text: string) => {
+      if (!dashboard) return;
+      void speak(key, text, (said) => dashboard.speak(said, voiceProfile)).catch((err) =>
+        notify(`No se pudo leer la respuesta: ${err instanceof Error ? err.message : String(err)}`, "error"),
+      );
+    },
+    [dashboard, voiceProfile, notify],
+  );
+
+  // Read at the end of a turn, so the latest setting counts, not the one at send time.
+  const autoSpeakRef = useRef(settings.autoSpeak);
+  autoSpeakRef.current = settings.autoSpeak;
+  const speakRef = useRef(speakReply);
+  speakRef.current = speakReply;
+
+  function speakFinishedTurn(sessionId: string) {
+    if (!autoSpeakRef.current || getActiveId() !== sessionId) return;
+    const reply = getRun(sessionId)?.stream.items.findLast((it) => it.kind === "assistant" && it.text.trim());
+    if (reply?.kind === "assistant") speakRef.current(reply.text, reply.text);
+  }
+
+  // Leaving the session (or the chat) stops a reply being read out.
+  useEffect(() => stopSpeaking, [activeSessionId]);
 
   // -- actions ---------------------------------------------------------------
   async function send(text: string, images: string[]) {
@@ -147,12 +197,16 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   }
 
   async function sendDashboard(dc: NonNullable<typeof chat>, text: string, images: string[]) {
+    if (editing) return retryLast(text);
     let id = activeSessionId;
     let profile = sessionProfile;
+    const slash = images.length === 0 && /^\/\S/.test(text);
     try {
       if (!id) {
         profile = targetProfile;
-        id = await dc.create(profile, (text || "Imagen").replace(/\s+/g, " ").slice(0, 60));
+        id = await dc.create(profile, slash ? undefined : (text || "Imagen").replace(/\s+/g, " ").slice(0, 60), newChatOptions);
+        setNewChatOptions({});
+        if (slash) setActiveSessionId(id, profile);
       }
     } catch (err) {
       notify(err instanceof Error ? err.message : String(err), "error");
@@ -160,13 +214,145 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     }
     if (!profile) return;
     setPinned(true);
+    if (slash) return runSlash(dc, id, profile, text);
     const sessionId = id;
     // `send` registers the live run synchronously, before any await.
+    stopSpeaking();
     void dc.send(sessionId, profile, text, images, () => {
+      speakFinishedTurn(sessionId);
       void refreshSessions();
       if (getActiveId() === sessionId && !endedWithNotice(sessionId)) void loadHistory(sessionId, profile);
     });
     if (!activeSessionId) setActiveSessionId(sessionId, profile);
+  }
+
+  /** `/command`: output shows as a note; directives send a message or fill the composer. */
+  async function runSlash(dc: NonNullable<typeof chat>, sessionId: string, profile: string, line: string) {
+    const note = (text: string, tone: "info" | "error" = "info") =>
+      setSlashNotes((prev) => [...prev, { kind: "notice", key: `slash-${Date.now()}-${prev.length}`, tone, text }]);
+    try {
+      const out = await dc.runSlash(sessionId, profile, line);
+      if (out.kind === "output") note(`${line.split(/\s/)[0]}\n${out.text}`);
+      else if (out.kind === "prefill") setPrefill({ text: out.message, nonce: Date.now() });
+      else {
+        stopSpeaking();
+        void dc.send(sessionId, profile, out.message, [], () => {
+          speakFinishedTurn(sessionId);
+          void refreshSessions();
+          if (getActiveId() === sessionId && !endedWithNotice(sessionId)) void loadHistory(sessionId, profile);
+        });
+      }
+      void refreshSessions();
+    } catch (err) {
+      note(`${line.split(/\s/)[0]}: ${err instanceof Error ? err.message : String(err)}`, "error");
+    }
+  }
+
+  const slashComplete = useCallback(
+    (text: string) =>
+      chat ? chat.completeSlash(text, activeSessionId, voiceProfile) : Promise.resolve({ items: [], replaceFrom: 0 }),
+    [chat, activeSessionId, voiceProfile],
+  );
+
+  // -- retry / edit the last turn ------------------------------------------------
+  const lastUserIndex = history.findLastIndex((it) => it.kind === "user");
+  const lastAssistantIndex = history.findLastIndex((it) => it.kind === "assistant");
+  const canRetry = dashboardMode && !busy && !run && lastUserIndex !== -1 && Boolean(sessionProfile);
+
+  /** Drop the last user turn (and its reply) and run `text` in its place. */
+  function retryLast(text?: string) {
+    const item = history[lastUserIndex];
+    if (!chat || !activeSessionId || !sessionProfile || item?.kind !== "user") return;
+    const sessionId = activeSessionId;
+    const profile = sessionProfile;
+    const rowId = Number(item.key.replace(/^h-/, ""));
+    setEditing(false);
+    setPinned(true);
+    // The live run re-renders the turn; hide the stored copy it replaces.
+    setHistory((prev) => prev.slice(0, lastUserIndex));
+    stopSpeaking();
+    void chat.retry(
+      sessionId,
+      profile,
+      text ?? item.text,
+      () => {
+        speakFinishedTurn(sessionId);
+        void refreshSessions();
+        if (getActiveId() === sessionId && !endedWithNotice(sessionId)) void loadHistory(sessionId, profile);
+      },
+      Number.isFinite(rowId) ? rowId : undefined,
+    );
+  }
+
+  function editLast() {
+    const item = history[lastUserIndex];
+    if (item?.kind !== "user") return;
+    setEditing(true);
+    setPrefill({ text: item.text, nonce: Date.now() });
+  }
+
+  // -- session actions (dashboard mode) -------------------------------------------
+  async function sessionAction(action: SessionAction) {
+    if (!dashboard || !chat || !activeSessionId || !sessionProfile) return;
+    const id = activeSessionId;
+    const profile = sessionProfile;
+    const fail = (err: unknown) => notify(err instanceof Error ? err.message : String(err), "error");
+    try {
+      switch (action) {
+        case "rename": {
+          const title = window.prompt("Nuevo título", session?.title ?? "");
+          if (title == null || !title.trim()) return;
+          await dashboard.updateSession(id, profile, { title: title.trim() });
+          notify("Sesión renombrada");
+          break;
+        }
+        case "pin":
+          await dashboard.updateSession(id, profile, { pinned: !session?.pinned });
+          break;
+        case "archive":
+          await dashboard.updateSession(id, profile, { archived: true });
+          setActiveSessionId(null);
+          notify("Sesión archivada");
+          break;
+        case "branch": {
+          const child = await chat.branch(id, profile, `${session?.title || "Sesión"} (rama)`);
+          await refreshSessions();
+          setActiveSessionId(child, profile);
+          notify("Sesión ramificada");
+          return;
+        }
+        case "export":
+          await exportJson(await dashboard.exportSession(id, profile), `${(session?.title || id).replace(/[^\w.-]+/g, "_")}.json`);
+          return;
+        case "delete":
+          if (!window.confirm("¿Borrar esta sesión? No se puede deshacer.")) return;
+          await dashboard.deleteSession(id, profile);
+          setActiveSessionId(null);
+          notify("Sesión borrada");
+          break;
+      }
+      void refreshSessions();
+    } catch (err) {
+      fail(err);
+    }
+  }
+
+  /** Share sheet where there is one (files), a download in browsers, the clipboard otherwise. */
+  async function exportJson(json: string, filename: string) {
+    const file = new File([json], filename, { type: "application/json" });
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title: filename });
+      return;
+    }
+    if (!isNativeApp()) {
+      const url = URL.createObjectURL(file);
+      const a = Object.assign(document.createElement("a"), { href: url, download: filename });
+      a.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
+    await navigator.clipboard.writeText(json);
+    notify("Exportación copiada al portapapeles");
   }
 
   /**
@@ -241,18 +427,33 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
           {session && (
             <p className="truncate font-mono text-xs text-text-tertiary">
               {session.profile && `${session.profile} · `}
-              {session.model || "hermes-agent"}
+              {live.info.model || session.model || "hermes-agent"}
               {session.message_count != null && ` · ${session.message_count} mensajes`}
               {session.estimated_cost_usd ? ` · $${session.estimated_cost_usd.toFixed(3)}` : ""}
             </p>
           )}
         </div>
         {busy && <Spinner className="me-2 text-midground" aria-label="Hermes está trabajando" />}
+        {dashboardMode && activeSessionId && <ContextMeter usage={live.usage} model={live.info.model} />}
         {session && (
           <>
             <IconButton label="Recargar" onClick={() => void loadHistory(session.id, session.profile)} disabled={busy}>
               <RefreshCw />
             </IconButton>
+          </>
+        )}
+        {session && dashboardMode && (
+          <>
+            <IconButton label="Acciones de la sesión" onClick={() => setMenuOpen(true)}>
+              <Ellipsis />
+            </IconButton>
+            <SessionMenu
+              open={menuOpen}
+              onClose={() => setMenuOpen(false)}
+              pinned={Boolean(session.pinned)}
+              busy={busy}
+              onAction={(a) => void sessionAction(a)}
+            />
           </>
         )}
         {session && client && (
@@ -321,13 +522,25 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
               </div>
             )}
 
-            {items.map((item) => {
+            {items.map((item, i) => {
               switch (item.kind) {
                 case "user":
-                  return <UserMessage key={item.key} item={item} />;
+                  return (
+                    <UserMessage
+                      key={item.key}
+                      item={item}
+                      onEdit={canRetry && i === lastUserIndex ? editLast : undefined}
+                    />
+                  );
                 case "assistant":
                   return (
-                    <AssistantMessage key={item.key} item={item} showReasoning={settings.showReasoning} />
+                    <AssistantMessage
+                      key={item.key}
+                      item={item}
+                      showReasoning={settings.showReasoning}
+                      onSpeak={dashboardMode ? speakReply : undefined}
+                      onRetry={canRetry && i === lastAssistantIndex && i > lastUserIndex ? () => retryLast() : undefined}
+                    />
                   );
                 case "tool":
                   return <ToolActivity key={item.key} item={item} />;
@@ -385,10 +598,46 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
               <span>{chatStatus.detail} Se reconecta al enviar.</span>
             </p>
           )}
+          {dashboardMode && <TodoStrip todos={live.todos} />}
+          {editing && (
+            <p className="mb-2 flex items-center gap-2 text-xs text-text-secondary">
+              <Pencil className="size-3.5 shrink-0 text-midground" />
+              <span className="flex-1">Editando tu último mensaje: al enviar se reemplaza junto con su respuesta.</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setEditing(false);
+                  setPrefill({ text: "", nonce: Date.now() });
+                }}
+                className="inline-flex min-h-9 items-center gap-1 px-2 text-text-tertiary hover:text-midground"
+              >
+                <X className="size-3.5" /> Cancelar
+              </button>
+            </p>
+          )}
           <Composer
             busy={busy}
+            prefill={prefill}
+            onSlashComplete={dashboardMode ? slashComplete : undefined}
+            toolbar={
+              // An open session needs its owning profile before it can be attached.
+              dashboardMode && chat && (!activeSessionId || sessionProfile) ? (
+                <SessionControls
+                  chat={chat}
+                  sessionId={activeSessionId}
+                  profile={voiceProfile}
+                  draft={newChatOptions}
+                  onDraftChange={setNewChatOptions}
+                  onError={(m) => notify(m, "error")}
+                  onNotice={(m) => notify(m)}
+                  disabled={busy}
+                />
+              ) : undefined
+            }
             enterSends={settings.enterSends}
             onSend={(t, imgs) => void send(t, imgs)}
+            onTranscribe={dashboardMode ? transcribe : undefined}
+            onError={(message) => notify(message, "error")}
             onStop={() =>
               activeSessionId &&
               void stopRun(activeSessionId).catch((err) => notify(err instanceof Error ? err.message : String(err), "error"))

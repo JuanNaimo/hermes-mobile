@@ -254,3 +254,81 @@ test("DashboardChat: a dropped socket ends the turn with a notice, the next send
   assert.ok(again.stream.items.some((i) => i.kind === "assistant" && /hola de nuevo/.test(i.text)));
   chat.close();
 });
+
+test("DashboardChat: model, effort, fast and yolo per session, with live info and a confirm for expensive models", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getLive } = await import("../src/lib/sessionLive.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  // New-chat picks ride on session.create.
+  const id = await chat.create("default", "Modelos", { model: "openai/gpt-5", provider: "openrouter", reasoning_effort: "high" });
+  assert.equal(getLive(id).info.model, "openai/gpt-5");
+  assert.equal(getLive(id).info.reasoning_effort, "high");
+  assert.equal(chat.gateway.sessionAuthority, false);
+
+  const options = await chat.modelOptions(id, "default");
+  assert.equal(options.model, "openai/gpt-5");
+  assert.ok(options.providers.some((p) => p.slug === "nous" && p.authenticated === false));
+  // Without a session the catalog comes over REST, with the profile's model.
+  assert.equal((await chat.modelOptions(null, "tech-insider")).model, "openai/gpt-5");
+
+  assert.deepEqual(await chat.setModel(id, "default", "anthropic/claude-sonnet", "openrouter"), { status: "ok", warning: undefined, deferred: false });
+  assert.equal(getLive(id).info.model, "anthropic/claude-sonnet");
+  const ask = await chat.setModel(id, "default", "anthropic/claude-opus", "openrouter");
+  assert.equal(ask.status, "confirm");
+  assert.equal(getLive(id).info.model, "anthropic/claude-sonnet");
+  assert.equal((await chat.setModel(id, "default", "anthropic/claude-opus", "openrouter", true)).status, "ok");
+  assert.equal(getLive(id).info.model, "anthropic/claude-opus");
+
+  await chat.setReasoning(id, "default", "none");
+  await chat.setFast(id, "default", true);
+  await chat.setYolo(id, "default", true);
+  const info = getLive(id).info;
+  assert.deepEqual([info.reasoning_effort, info.fast, info.yolo], ["none", true, true]);
+  await assert.rejects(chat.setReasoning(id, "default", "turbo"), /bad effort/);
+  chat.close();
+});
+
+test("DashboardChat: usage and todos arrive with a turn; retry replaces the last turn; branch copies the session", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getLive } = await import("../src/lib/sessionLive.ts");
+  const { getRun } = await import("../src/lib/runs.ts");
+  let changed = 0;
+  const chat = new DashboardChat(dash, { socketFactory: webSocket, onSessionsChanged: () => changed++ });
+  const id = await chat.create("default", "Plan");
+  await new Promise<void>((resolve) => void chat.send(id, "default", "armá un plan", [], resolve));
+  assert.equal(getLive(id).todos.length, 3);
+  assert.equal(getLive(id).todos.find((t) => t.status === "in_progress")?.content, "Mirar el uso de disco");
+  assert.equal(getLive(id).usage?.context_percent, 4.5);
+
+  const before = await dash.messages(id, "default");
+  assert.equal(before.filter((m) => m.role === "user").length, 1);
+  await new Promise<void>((resolve) => void chat.retry(id, "default", "armá otro plan", resolve));
+  const after = await dash.messages(id, "default");
+  assert.deepEqual(after.filter((m) => m.role === "user").map((m) => m.content), ["armá otro plan"]);
+  assert.ok(getRun(id)!.stream.items.some((i) => i.kind === "user" && i.text === "armá otro plan"));
+
+  const child = await chat.branch(id, "default", "Plan (rama)");
+  assert.notEqual(child, id);
+  const copied = await dash.messages(child, "default");
+  assert.equal(copied.length, after.length);
+  chat.close();
+});
+
+test("DashboardChat: slash commands complete, print output, send directives and prefill", async () => {
+  const { DashboardChat, slashOutcome } = await import("../src/lib/dashboardChat.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const id = await chat.create("default", "Slash");
+  const done = await chat.completeSlash("/co", id, "default");
+  assert.deepEqual(done.items.map((i) => i.text), ["/compress"]);
+  const help = await chat.runSlash(id, "default", "/help");
+  assert.ok(help.kind === "output" && help.text.includes("/plan"));
+  assert.deepEqual(await chat.runSlash(id, "default", "/plan limpiar logs"), {
+    kind: "send",
+    message: "Armá un plan para: limpiar logs",
+    display: "/plan limpiar logs",
+  });
+  assert.equal((await chat.runSlash(id, "default", "/draft")).kind, "prefill");
+  await assert.rejects(chat.runSlash(id, "default", "/nope"), /unknown command/);
+  assert.deepEqual(slashOutcome({ type: "exec", output: "", warning: "ojo" }), { kind: "output", text: "ojo" });
+  chat.close();
+});

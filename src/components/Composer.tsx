@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, ImagePlus, Square, X } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { ArrowUp, ImagePlus, Mic, Square, X } from "lucide-react";
+import { Spinner } from "@/components/ds";
 import { cn } from "@/lib/utils";
+import { startRecording, type Recording } from "@/lib/voice";
 import { IconButton } from "./ui";
 
 const MAX_IMAGE_EDGE = 1600;
@@ -24,6 +26,11 @@ export function Composer({
   onStop,
   autoFocus,
   allowImages = true,
+  onTranscribe,
+  onError,
+  toolbar,
+  prefill,
+  onSlashComplete,
 }: {
   busy: boolean;
   enterSends: boolean;
@@ -31,11 +38,94 @@ export function Composer({
   onStop: () => void;
   autoFocus?: boolean;
   allowImages?: boolean;
+  /** Turns a recorded clip into text; without it there is no mic button. */
+  onTranscribe?: (clip: Blob) => Promise<string>;
+  onError?: (message: string) => void;
+  /** Row under the text box (the session pills). */
+  toolbar?: ReactNode;
+  /** Replace the draft with this text (a new `nonce` re-applies the same text). */
+  prefill?: { text: string; nonce: number };
+  /** Completions for a `/command` draft; without it there is no autocomplete. */
+  onSlashComplete?: (text: string) => Promise<{ items: SlashSuggestion[]; replaceFrom: number }>;
 }) {
   const [text, setText] = useState("");
+  const [suggestions, setSuggestions] = useState<{ items: SlashSuggestion[]; replaceFrom: number } | null>(null);
   const [images, setImages] = useState<string[]>([]);
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const [voice, setVoice] = useState<"idle" | "starting" | "recording" | "transcribing">("idle");
+  const [elapsed, setElapsed] = useState(0);
+  const recording = useRef<Recording | null>(null);
+
+  // Tick the recording clock; drop a recording left running when the composer goes away.
+  useEffect(() => {
+    if (voice !== "recording") return;
+    const started = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 500);
+    return () => clearInterval(timer);
+  }, [voice]);
+  useEffect(() => () => recording.current?.cancel(), []);
+
+  async function startVoice() {
+    setVoice("starting");
+    try {
+      recording.current = await startRecording(() => void stopVoice());
+      setVoice("recording");
+    } catch (err) {
+      setVoice("idle");
+      onError?.(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Dictation fills the box; sending stays a separate tap, as in Hermes Desktop. */
+  async function stopVoice() {
+    const rec = recording.current;
+    recording.current = null;
+    if (!rec || !onTranscribe) return;
+    setVoice("transcribing");
+    try {
+      const said = await onTranscribe(await rec.stop());
+      if (said) setText((prev) => (prev.trim() ? `${prev.trimEnd()} ${said}` : said));
+      else onError?.("No se escuchó nada. Probá de nuevo más cerca del micrófono.");
+      ref.current?.focus();
+    } catch (err) {
+      onError?.(err instanceof Error ? err.message : String(err));
+    } finally {
+      setVoice("idle");
+    }
+  }
+
+  useEffect(() => {
+    if (!prefill) return;
+    setText(prefill.text);
+    ref.current?.focus();
+  }, [prefill]);
+
+  // `/co…` → the server's completions, while the command word is being typed.
+  useEffect(() => {
+    if (!onSlashComplete || !/^\/\S*$/.test(text)) {
+      setSuggestions(null);
+      return;
+    }
+    let alive = true;
+    const timer = setTimeout(() => {
+      onSlashComplete(text)
+        .then((res) => alive && setSuggestions(res.items.length ? res : null))
+        .catch(() => alive && setSuggestions(null));
+    }, 150);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [text, onSlashComplete]);
+
+  function applySuggestion(s: SlashSuggestion) {
+    if (!suggestions) return;
+    setText(`${text.slice(0, suggestions.replaceFrom)}${s.text} `);
+    setSuggestions(null);
+    ref.current?.focus();
+  }
 
   // Auto-grow up to ~8 lines.
   useEffect(() => {
@@ -72,11 +162,33 @@ export function Composer({
   return (
     <div
       className={cn(
-        "border border-current/20 bg-background-base/85 backdrop-blur-md",
+        "relative border border-current/20 bg-background-base/85 backdrop-blur-md",
         "rounded-[var(--radius-lg)] shadow-[0_-12px_40px_-20px_rgba(0,0,0,0.6)]",
         "focus-within:border-midground/40",
       )}
     >
+      {suggestions && (
+        <ul
+          role="listbox"
+          aria-label="Comandos"
+          className="absolute inset-x-0 bottom-full z-20 mb-2 max-h-64 overflow-y-auto border border-current/20 bg-background-base p-1 shadow-[0_-12px_40px_-20px_rgba(0,0,0,0.6)] rounded-[var(--radius-md)]"
+        >
+          {suggestions.items.slice(0, 30).map((s) => (
+            <li key={s.text}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={false}
+                onClick={() => applySuggestion(s)}
+                className="flex min-h-11 w-full items-baseline gap-3 rounded-[var(--radius-sm)] px-3 py-2 text-start hover:bg-midground/10"
+              >
+                <span className="shrink-0 font-mono text-sm text-midground">{s.display || s.text}</span>
+                {s.meta && <span className="min-w-0 truncate text-xs text-text-tertiary">{s.meta}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {images.length > 0 && (
         <div className="flex gap-2 overflow-x-auto px-3 pt-3 scrollbar-none">
           {images.map((src, i) => (
@@ -116,7 +228,13 @@ export function Composer({
           rows={1}
           value={text}
           autoFocus={autoFocus}
-          placeholder="Escribile a Hermes…"
+          placeholder={
+            voice === "recording"
+              ? `Escuchando… ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`
+              : voice === "transcribing"
+                ? "Transcribiendo…"
+                : "Escribile a Hermes…"
+          }
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
           enterKeyHint={enterSends ? "send" : "enter"}
@@ -126,6 +244,23 @@ export function Composer({
             "placeholder:text-text-disabled focus:outline-none",
           )}
         />
+        {onTranscribe && (
+          <button
+            type="button"
+            aria-label={voice === "recording" ? "Terminar de dictar" : "Dictar"}
+            aria-pressed={voice === "recording"}
+            onClick={() => (voice === "recording" ? void stopVoice() : voice === "idle" && void startVoice())}
+            disabled={voice === "starting" || voice === "transcribing"}
+            className={cn(
+              "inline-flex size-11 shrink-0 items-center justify-center rounded-[var(--radius-md)] transition-colors",
+              voice === "recording"
+                ? "bg-destructive text-background-base animate-pulse motion-reduce:animate-none"
+                : "text-text-secondary hover:bg-midground/10 hover:text-midground disabled:opacity-50",
+            )}
+          >
+            {voice === "transcribing" || voice === "starting" ? <Spinner /> : <Mic className="size-5" />}
+          </button>
+        )}
         {busy ? (
           <button
             type="button"
@@ -151,6 +286,13 @@ export function Composer({
           </button>
         )}
       </div>
+      {toolbar}
     </div>
   );
+}
+
+export interface SlashSuggestion {
+  text: string;
+  display?: string;
+  meta?: string;
 }

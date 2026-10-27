@@ -120,3 +120,85 @@ test("skills per profile with a persistent on/off switch, and toolsets", async (
   const toolsets = await client.toolsets("tech-insider");
   assert.ok(toolsets.some((t) => t.name === "web" && t.configured === false));
 });
+
+test("voice: transcribes a clip and synthesizes speech for a profile", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  const clip = `data:audio/webm;base64,${Buffer.from("fake opus").toString("base64")}`;
+  assert.equal(await client.transcribe(clip, "audio/webm", "default"), "hola hermes, ¿cómo va el servidor?");
+  const silence = `data:audio/webm;base64,${Buffer.from("silence").toString("base64")}`;
+  assert.equal(await client.transcribe(silence, "audio/webm"), "");
+  await assert.rejects(client.transcribe(clip, "text/plain"), /Unsupported audio type/);
+  assert.match(await client.speak("Hola", "tech-insider"), /^data:audio\/wav;base64,/);
+});
+
+test("session edits are fenced: rename, pin, archive, export and delete", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  const [first] = await client.sessions("default");
+  await client.updateSession(first.id, "default", { title: "Renombrada" });
+  await client.updateSession(first.id, "default", { pinned: true });
+  let row = (await client.sessions("default")).find((s) => s.id === first.id)!;
+  assert.equal(row.title, "Renombrada");
+  assert.equal(row.pinned, true);
+  // Archiving also unpins.
+  await client.updateSession(first.id, "default", { archived: true });
+  row = (await client.sessions("default")).find((s) => s.id === first.id)!;
+  assert.deepEqual([row.archived, row.pinned], [true, false]);
+  const exported = JSON.parse(await client.exportSession(first.id, "default"));
+  assert.equal(exported.id, first.id);
+  assert.ok(Array.isArray(exported.messages));
+  await client.deleteSession(first.id, "default");
+  assert.ok(!(await client.sessions("default")).some((s) => s.id === first.id));
+  // An unfenced edit is refused, as on the real dashboard.
+  const [other] = await client.sessions("default");
+  await assert.rejects(
+    client.request(`/api/sessions/${other.id}`, { method: "PATCH", json: { profile: "default", title: "x" } }),
+    /mutation_identity_required/,
+  );
+});
+
+test("model catalog over REST for a new chat", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  const options = await client.modelOptions("default");
+  assert.equal(options.model, "anthropic/claude-sonnet");
+  assert.equal(options.providers[0].capabilities?.["openai/gpt-5"]?.can_disable_reasoning, false);
+});
+
+test("bots: platforms per profile, credentials, test, pairing and quick setups", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  const platforms = await client.messagingPlatforms("default");
+  const tg = platforms.find((p) => p.id === "telegram")!;
+  assert.equal(tg.state, "connected");
+  // Secrets come back only as a preview.
+  assert.equal(tg.env_vars[0].value, null);
+  assert.equal((await client.testPlatform("telegram", "default")).auth_posture, "pairing");
+
+  assert.match((await client.testPlatform("discord", "default")).message, /disabled/);
+  await client.updatePlatform("discord", "default", { enabled: true, env: { DISCORD_BOT_TOKEN: "tok" } });
+  const discord = (await client.messagingPlatforms("default")).find((p) => p.id === "discord")!;
+  assert.deepEqual([discord.enabled, discord.configured, discord.state], [true, true, "pending_restart"]);
+  await client.updatePlatform("discord", "default", { clear_env: ["DISCORD_BOT_TOKEN"] });
+  assert.equal((await client.messagingPlatforms("default")).find((p) => p.id === "discord")!.configured, false);
+  // Other profiles keep their own switches.
+  assert.equal((await client.messagingPlatforms("tech-insider")).find((p) => p.id === "discord")!.enabled, false);
+
+  let pairing = await client.pairing("default");
+  await client.approvePairing("default", "telegram", { request_id: pairing.pending[0].request_id });
+  pairing = await client.pairing("default");
+  assert.deepEqual([pairing.pending.length, pairing.approved.length], [0, 2]);
+  await client.revokePairing("default", "telegram", "555111");
+  assert.equal((await client.pairing("default")).approved.length, 1);
+  await assert.rejects(client.approvePairing("default", "telegram", { code: "NOPE" }), /not found/);
+
+  const tgSetup = await client.telegramSetupStart();
+  assert.match(tgSetup.deep_link, /^https:\/\/t\.me\//);
+  assert.equal((await client.telegramSetupStatus(tgSetup.pairing_id)).status, "waiting");
+  const ready = await client.telegramSetupStatus(tgSetup.pairing_id);
+  assert.equal(ready.status === "ready" && ready.owner_user_id, "123456789");
+  assert.equal((await client.telegramSetupApply(tgSetup.pairing_id, "default", ["123456789"])).needs_restart, false);
+
+  const wa = await client.whatsappSetupStart("default", { mode: "bot" });
+  assert.equal((await client.whatsappSetupStatus(wa.pairing_id)).status, "waiting");
+  await client.whatsappSetupStatus(wa.pairing_id);
+  assert.equal((await client.whatsappSetupStatus(wa.pairing_id)).status, "connected");
+  assert.equal((await client.whatsappSetupApply(wa.pairing_id, "default")).ok, true);
+});

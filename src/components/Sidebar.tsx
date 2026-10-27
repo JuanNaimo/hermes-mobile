@@ -8,6 +8,7 @@ import {
   PanelLeftClose,
   Plus,
   Puzzle,
+  Bot,
   Search,
   Server,
   UserPlus,
@@ -25,6 +26,7 @@ const NAV: { view: View; label: string; icon: typeof MessageSquare }[] = [
   { view: "chat", label: "Chat", icon: MessageSquare },
   { view: "jobs", label: "Jobs", icon: CalendarClock },
   { view: "skills", label: "Skills", icon: Puzzle },
+  { view: "bots", label: "Bots", icon: Bot },
   { view: "server", label: "Servidor", icon: Server },
 ];
 
@@ -101,7 +103,7 @@ export function Sidebar({
       </div>
 
       <nav aria-label="Navegación" className="shrink-0 border-b border-current/10 py-1.5">
-        <ul className="grid grid-cols-4">
+        <ul className="grid grid-cols-5">
           {NAV.map(({ view: v, label, icon: Icon }) => {
             const active = view === v;
             return (
@@ -114,7 +116,7 @@ export function Sidebar({
                   }}
                   className={cn(
                     "relative flex h-14 w-full flex-col items-center justify-center gap-1",
-                    "text-display text-[0.7rem] tracking-[0.12em] transition-colors",
+                    "text-display text-[0.7rem] tracking-[0.06em] transition-colors",
                     active ? "text-midground" : "text-text-secondary hover:text-midground",
                   )}
                 >

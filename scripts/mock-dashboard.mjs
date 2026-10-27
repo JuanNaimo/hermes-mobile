@@ -39,6 +39,42 @@ export function startMockDashboard({
   /** refresh token → user */
   const refresh = new Map();
 
+  /** `model.options` / `GET /api/model/options`: two providers, one without credentials. */
+  const catalog = {
+    providers: [
+      {
+        slug: "openrouter", name: "OpenRouter", aliases: ["or"], authenticated: true,
+        models: ["anthropic/claude-sonnet", "anthropic/claude-opus", "openai/gpt-5", "deepseek/deepseek-chat"],
+        featured_models: ["anthropic/claude-sonnet", "openai/gpt-5"],
+        capabilities: {
+          "anthropic/claude-sonnet": { reasoning: true, can_disable_reasoning: true, fast: false },
+          "anthropic/claude-opus": { reasoning: true, can_disable_reasoning: true, fast: true },
+          "openai/gpt-5": { reasoning: true, can_disable_reasoning: false, fast: true },
+          "deepseek/deepseek-chat": { reasoning: false, fast: false },
+        },
+        pricing: {
+          "anthropic/claude-sonnet": { input: "$3", output: "$15" },
+          "anthropic/claude-opus": { input: "$15", output: "$75" },
+          "openai/gpt-5": { input: "$1.25", output: "$10" },
+          "deepseek/deepseek-chat": { input: "$0.27", output: "$1.10" },
+        },
+      },
+      { slug: "nous", name: "Nous Portal", authenticated: false, warning: "Iniciá sesión con `hermes login nous`", models: ["hermes-4-405b"] },
+    ],
+  };
+  /** Models the mock treats as expensive: switching to one asks for confirmation. */
+  const EXPENSIVE = new Set(["anthropic/claude-opus"]);
+  /** Commands `complete.slash` offers: [name, description]. */
+  const SLASH = [
+    ["help", "Lista de comandos"],
+    ["plan", "Planificar una tarea (skill)"],
+    ["draft", "Empezar un borrador en el compositor"],
+    ["compress", "Resumir el contexto para liberar espacio"],
+  ];
+  /** Fences per stored session (`profile/id`), bumped by every metadata edit. */
+  const revisions = new Map();
+  const revisionOf = (key) => revisions.get(key) ?? 1;
+
   const profiles = [
     { name: "default", is_default: true, model: "anthropic/claude-sonnet", provider: "openrouter", has_env: true, skill_count: 42, gateway_running: true, description: "Perfil principal", display_name: "", bot_title: "", has_alias: false },
     { name: "tech-insider", is_default: false, model: "openai/gpt-5", provider: "openrouter", has_env: true, skill_count: 12, gateway_running: false, description: "Notas y newsletter de tecnología", display_name: "Tech Insider", bot_title: "", has_alias: true },
@@ -122,6 +158,57 @@ export function startMockDashboard({
     { name: "web", label: "Web", description: "Búsqueda y navegación", platform: "cli", enabled: true, available: true, configured: profile === "default", tools: ["web_search", "web_extract"] },
     { name: "image_gen", label: "Imágenes", description: "Generación de imágenes", platform: "cli", enabled: false, available: false, configured: false, tools: ["image_generate"] },
   ];
+
+  /** Bots: per-profile platform switches and credentials, one shared pairing store. */
+  const botState = new Map();
+  const bots = {
+    tg: null,
+    wa: null,
+    pairing: {
+      pending: [{ platform: "telegram", request_id: "req-1", user_id: "555111", user_name: "maria", age_minutes: 3 }],
+      approved: [{ platform: "telegram", user_id: "123456789", user_name: "juan", approved_at: 1_760_000_000 }],
+    },
+    state(profile) {
+      if (!botState.has(profile)) {
+        botState.set(profile, {
+          telegram: { enabled: true, env: { TELEGRAM_BOT_TOKEN: "123:abc", TELEGRAM_ALLOWED_USERS: "123456789" } },
+          discord: { enabled: false, env: {} },
+          slack: { enabled: false, env: {} },
+        });
+      }
+      return botState.get(profile);
+    },
+    platforms(profile) {
+      const st = bots.state(profile);
+      const field = (env, key, extra = {}) => ({
+        key, required: false, is_set: Boolean(env[key]), redacted_value: env[key] && !extra.is_list ? "123…abc" : null,
+        value: extra.is_list ? (env[key] ?? "") : null, description: "", prompt: key, help: "", url: null,
+        is_password: !extra.is_list, is_list: false, advanced: false, ...extra,
+      });
+      const make = (id, name, keys) => {
+        const { enabled, env } = st[id];
+        const configured = Boolean(env[keys[0]]);
+        return {
+          id, name, description: `Chateá con Hermes desde ${name}.`, docs_url: `https://hermes-agent.nousresearch.com/docs/${id}`,
+          enabled, configured, gateway_running: true,
+          state: !enabled ? "disabled" : !configured ? "not_configured" : id === "telegram" ? "connected" : "pending_restart",
+          error_code: null, error_message: null, home_channel: null,
+          env_vars: [field(env, keys[0], { required: true, prompt: "Bot token" }), field(env, keys[1], { prompt: "Usuarios permitidos", is_list: true, is_password: false })],
+        };
+      };
+      return [
+        make("telegram", "Telegram", ["TELEGRAM_BOT_TOKEN", "TELEGRAM_ALLOWED_USERS"]),
+        make("discord", "Discord", ["DISCORD_BOT_TOKEN", "DISCORD_ALLOWED_USERS"]),
+        make("slack", "Slack", ["SLACK_BOT_TOKEN", "SLACK_ALLOWED_USERS"]),
+      ];
+    },
+    update(profile, id, b) {
+      const plat = bots.state(profile)[id];
+      for (const key of b.clear_env ?? []) delete plat.env[key];
+      for (const [key, value] of Object.entries(b.env ?? {})) if (String(value).trim()) plat.env[key] = String(value).trim();
+      if (b.enabled != null) plat.enabled = Boolean(b.enabled);
+    },
+  };
 
   // ---------------------------------------------------------------------------
 
@@ -296,6 +383,25 @@ export function startMockDashboard({
         tickets.set(ticket, now() + 30);
         return json(res, 200, { ticket, ttl_seconds: 30 });
       }
+      // -- audio (hermes_cli/web_routers/audio.py): fixed transcript, a short silent wav.
+      if (path === "/api/audio/transcribe" && req.method === "POST") {
+        const b = await body(req);
+        const mime = String(b?.mime_type ?? "").split(";")[0];
+        if (!/^data:/.test(String(b?.data_url ?? ""))) return detail(res, 400, "data_url must be a data: URL");
+        if (!(mime.startsWith("audio/") || mime === "video/webm")) return detail(res, 400, `Unsupported audio type: ${mime}`);
+        // A clip whose payload is just "silence" stands for no speech.
+        const silent = String(b.data_url).endsWith(Buffer.from("silence").toString("base64"));
+        return json(res, 200, { ok: true, transcript: silent ? "" : "hola hermes, ¿cómo va el servidor?", provider: "mock" });
+      }
+      if (path === "/api/audio/speak" && req.method === "POST") {
+        const b = await body(req);
+        if (!String(b?.text ?? "").trim()) return detail(res, 400, "text is required");
+        const wav = Buffer.alloc(44);
+        wav.write("RIFF", 0); wav.writeUInt32LE(36, 4); wav.write("WAVEfmt ", 8); wav.writeUInt32LE(16, 16);
+        wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(16000, 24); wav.writeUInt32LE(32000, 28);
+        wav.writeUInt16LE(2, 32); wav.writeUInt16LE(16, 34); wav.write("data", 36); wav.writeUInt32LE(0, 40);
+        return json(res, 200, { ok: true, data_url: `data:audio/wav;base64,${wav.toString("base64")}`, mime_type: "audio/wav", provider: "mock" });
+      }
       if (path === "/api/auth/me") {
         return json(res, 200, { user_id: user, email: "", display_name: user, org_id: "", provider: "basic", expires_at: 0 });
       }
@@ -366,6 +472,119 @@ export function startMockDashboard({
         const totals = {};
         for (const s of rows) totals[s.profile] = (totals[s.profile] ?? 0) + 1;
         return json(res, 200, { sessions: rows.slice(offset, offset + limit), total: rows.length, profile_totals: totals, limit, offset, errors: [], storage: [] });
+      }
+      // -- bots (web_routers/messaging.py, pairing in ops.py): one connected Telegram, an off Discord.
+      if (path === "/api/messaging/platforms") {
+        const p = q.get("profile") || "default";
+        return json(res, 200, { env_path: "~/.hermes/.env", platforms: bots.platforms(p) });
+      }
+      const bm = path.match(/^\/api\/messaging\/platforms\/([^/]+)(\/test)?$/);
+      if (bm) {
+        const id = decodeURIComponent(bm[1]);
+        const p = q.get("profile") || "default";
+        const plat = bots.platforms(p).find((x) => x.id === id);
+        if (!plat) return detail(res, 404, `Unknown messaging platform: ${id}`);
+        if (bm[2] && req.method === "POST") {
+          if (!plat.enabled) return json(res, 200, { ok: false, state: plat.state, message: `${plat.name} is disabled. Enable it, then restart the gateway.` });
+          if (!plat.configured) return json(res, 200, { ok: false, state: plat.state, message: "Missing required setup: DISCORD_BOT_TOKEN" });
+          return json(res, 200, { ok: true, state: "connected", message: "Connected. 1 user paired.", auth_posture: "pairing" });
+        }
+        if (req.method === "PUT") {
+          const b = await body(req);
+          bots.update(p, id, b);
+          return json(res, 200, { ok: true, platform: id, hot_served: false });
+        }
+      }
+      if (path === "/api/pairing") return json(res, 200, bots.pairing);
+      if (path === "/api/pairing/approve" && req.method === "POST") {
+        const b = await body(req);
+        const i = bots.pairing.pending.findIndex((r) => r.request_id === b.request_id || (b.code && b.code === "ABCD1234"));
+        if (i < 0) return detail(res, 404, `Pairing request or code not found or expired for platform '${b.platform}'.`);
+        const [r] = bots.pairing.pending.splice(i, 1);
+        const user = { platform: r.platform, user_id: r.user_id, user_name: r.user_name, approved_at: now() };
+        bots.pairing.approved.push(user);
+        return json(res, 200, { ok: true, user });
+      }
+      if (path === "/api/pairing/revoke" && req.method === "POST") {
+        const b = await body(req);
+        bots.pairing.approved = bots.pairing.approved.filter((u) => !(u.platform === b.platform && u.user_id === b.user_id));
+        return json(res, 200, { ok: true });
+      }
+      if (path === "/api/pairing/clear-pending" && req.method === "POST") {
+        const cleared = bots.pairing.pending.length;
+        bots.pairing.pending = [];
+        return json(res, 200, { ok: true, cleared });
+      }
+      if (path === "/api/gateway/restart" && req.method === "POST") return json(res, 200, { ok: true, pid: 4242, name: "gateway-restart" });
+      if (path === "/api/messaging/telegram/onboarding/start" && req.method === "POST") {
+        bots.tg = { id: token().slice(0, 12), polls: 0 };
+        return json(res, 200, {
+          pairing_id: bots.tg.id, suggested_username: "hermes_mock_bot", deep_link: "https://t.me/BotFather?start=mock",
+          qr_payload: "https://t.me/BotFather?start=mock", expires_at: new Date(Date.now() + 600_000).toISOString(),
+        });
+      }
+      if (path === "/api/messaging/whatsapp/onboarding/start" && req.method === "POST") {
+        const b = await body(req);
+        bots.wa = { pairing_id: token().slice(0, 12), status: "starting", qr_payload: null, mode: b.mode || "bot", allowed_users: b.allowed_users || "", polls: 0 };
+        return json(res, 200, bots.wa);
+      }
+      const tm = path.match(/^\/api\/messaging\/(telegram|whatsapp)\/onboarding\/([^/]+)(\/apply)?$/);
+      if (tm) {
+        const [, kind, id, apply] = tm;
+        if (req.method === "DELETE") return json(res, 200, { ok: true });
+        if (kind === "telegram") {
+          if (!bots.tg || bots.tg.id !== id) return detail(res, 404, "Telegram setup session not found.");
+          if (apply) return json(res, 200, { ok: true, platform: "telegram", bot_username: "hermes_mock_bot", needs_restart: false, restart_started: true });
+          // Ready on the second poll.
+          return json(res, 200, ++bots.tg.polls < 2 ? { status: "waiting" } : { status: "ready", bot_username: "hermes_mock_bot", owner_user_id: "123456789" });
+        }
+        if (!bots.wa || bots.wa.pairing_id !== id) return detail(res, 404, "WhatsApp setup session not found.");
+        if (apply) return json(res, 200, { ok: true, platform: "whatsapp", needs_restart: false, restart_started: true });
+        bots.wa.polls = (bots.wa.polls ?? 0) + 1;
+        if (bots.wa.polls >= 3) Object.assign(bots.wa, { status: "connected", account_name: "Juan", account_phone: "5491122334455" });
+        else if (bots.wa.polls >= 1) Object.assign(bots.wa, { status: "waiting", qr_payload: "2@mock-whatsapp-qr,abc,def" });
+        return json(res, 200, bots.wa);
+      }
+      if (path === "/api/model/options") {
+        const profile = q.get("profile") || "default";
+        const p = profiles.find((x) => x.name === profile);
+        if (!p) return detail(res, 404, `Profile not found: ${profile}`);
+        return json(res, 200, { ...catalog, model: p.model, provider: p.provider });
+      }
+      const sm = path.match(/^\/api\/sessions\/([^/]+)(\/mutation-snapshot|\/export)?$/);
+      if (sm) {
+        const id = decodeURIComponent(sm[1]);
+        const profile = q.get("profile") || "default";
+        const row = sessions.find((r) => r.id === id && r.profile === profile);
+        const key = `${profile}/${id}`;
+        if (sm[2] === "/mutation-snapshot") {
+          return json(res, 200, { session_id: id, exists: Boolean(row), runtime_revision: revisionOf(key), runtime_generation: 1 });
+        }
+        if (sm[2] === "/export") {
+          if (!row) return detail(res, 404, "Session not found");
+          return json(res, 200, { ...row, messages: messages.get(key) ?? [] });
+        }
+        // Edits are fenced as on the real dashboard: unfenced → 409, stale revision → 409.
+        const fenceOk = (reqId, rev) => {
+          if (!reqId) return detail(res, 409, "mutation_identity_required"), false;
+          if (Number(rev) !== revisionOf(key)) return detail(res, 409, "revision_conflict"), false;
+          return true;
+        };
+        if (req.method === "PATCH") {
+          const b = await body(req);
+          if (!row) return detail(res, 404, "Session not found");
+          if (!fenceOk(b.request_id, b.expected_revision)) return;
+          for (const k of ["title", "pinned", "archived", "unread"]) if (k in b) row[k] = b[k];
+          revisions.set(key, revisionOf(key) + 1);
+          return json(res, 200, { ok: true, title: row.title, pinned: row.pinned, archived: row.archived });
+        }
+        if (req.method === "DELETE") {
+          if (!row) return json(res, 200, { ok: true, already_absent: true });
+          if (!fenceOk(q.get("request_id"), q.get("expected_revision"))) return;
+          sessions.splice(sessions.indexOf(row), 1);
+          messages.delete(key);
+          return json(res, 200, { ok: true });
+        }
       }
       const m = path.match(/^\/api\/sessions\/([^/]+)\/messages$/);
       if (m) {
@@ -443,6 +662,15 @@ export function startMockDashboard({
       return { id, answer: new Promise((resolve) => asked.set(id, resolve)) };
     };
     let capabilities = false;
+    /** What `session.info` reports for a live session. */
+    const infoOf = (s) => ({
+      model: s.model, provider: s.provider, reasoning_effort: s.effort, fast: s.fast, yolo: s.yolo,
+      title: s.title ?? "", running: Boolean(s.running), usage: s.usage ?? null,
+    });
+    const freshLive = (profile, extra) => {
+      const p = profiles.find((x) => x.name === profile);
+      return { model: p.model, provider: p.provider, effort: "medium", fast: false, yolo: false, ...extra };
+    };
 
     event("gateway.ready", undefined, { skin: {}, change_events: true, heartbeat: true, replay_epoch: "mock" });
 
@@ -475,17 +703,21 @@ export function startMockDashboard({
           const rid = `rt_${++runtimeN}`;
           // The stored row appears with the first prompt, as on the real gateway.
           const stored = `${new Date().toISOString().slice(0, 10).replace(/-/g, "")}_${(n++).toString(16).padStart(6, "0")}`;
-          live.set(rid, { profile, stored, title: params.title ?? null, ws, created: false });
-          return reply({ session_id: rid, stored_session_id: stored, message_count: 0, messages: [], info: {} });
+          const s = freshLive(profile, { profile, stored, title: params.title ?? null, ws, created: false });
+          if (params.model) Object.assign(s, { model: params.model, provider: params.provider ?? s.provider });
+          if (params.reasoning_effort) s.effort = params.reasoning_effort;
+          live.set(rid, s);
+          return reply({ session_id: rid, stored_session_id: stored, message_count: 0, messages: [], info: infoOf(s) });
         }
         case "session.resume": {
           const profile = params.profile || "default";
           const row = sessions.find((s) => s.id === params.session_id && s.profile === profile);
           if (!row) return fail(4004, `session not found: ${params.session_id}`);
           const rid = `rt_${++runtimeN}`;
-          live.set(rid, { profile, stored: row.id, title: row.title, ws, created: true });
+          const s = freshLive(profile, { profile, stored: row.id, title: row.title, ws, created: true, model: row.model });
+          live.set(rid, s);
           const count = messages.get(`${profile}/${row.id}`)?.length ?? 0;
-          return reply({ session_id: rid, stored_session_id: row.id, message_count: count, messages: [], messages_omitted: true, info: {} });
+          return reply({ session_id: rid, stored_session_id: row.id, message_count: count, messages: [], messages_omitted: true, info: infoOf(s), todo_state: row.todos ?? null });
         }
         case "session.interrupt": {
           const s = live.get(params.session_id);
@@ -522,6 +754,80 @@ export function startMockDashboard({
           void runTurn(params.session_id, s, text);
           return;
         }
+        case "model.options": {
+          const s = live.get(params.session_id);
+          const p = profiles.find((x) => x.name === (params.profile || "default"));
+          return reply({ ...catalog, model: s?.model ?? p?.model, provider: s?.provider ?? p?.provider });
+        }
+        case "config.set": {
+          const s = live.get(params.session_id);
+          if (!s) return fail(4001, "session_id required");
+          const value = String(params.value ?? "");
+          switch (params.key) {
+            case "model": {
+              const [model, , provider] = value.split(/\s+/);
+              const known = catalog.providers.find((p) => p.slug === provider)?.models.includes(model);
+              if (!known) return fail(4002, `unknown model: ${model}`);
+              if (EXPENSIVE.has(model) && !params.confirm_expensive_model) {
+                return reply({ key: "model", value, confirm_required: true, confirm_message: `${model} cuesta $15/$75 por millón de tokens. ¿Usarlo igual?` });
+              }
+              Object.assign(s, { model, provider });
+              break;
+            }
+            case "reasoning":
+              if (!["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(value)) return fail(4002, `bad effort: ${value}`);
+              s.effort = value;
+              break;
+            case "yolo":
+              s.yolo = value === "1";
+              break;
+            case "fast":
+              s.fast = value === "fast";
+              break;
+            default:
+              return fail(4002, `unknown key: ${params.key}`);
+          }
+          reply({ key: params.key, value, scope: "session" });
+          return event("session.info", params.session_id, infoOf(s));
+        }
+        case "complete.slash": {
+          const word = String(params.text ?? "").slice(1).toLowerCase();
+          const items = SLASH.filter(([name]) => name.startsWith(word)).map(([name, meta]) => ({ text: `/${name}`, meta }));
+          return reply({ items, replace_from: 0 });
+        }
+        case "slash.exec": {
+          const s = live.get(params.session_id);
+          if (!s) return fail(4004, "session not live");
+          const [name, ...rest] = String(params.command ?? "").split(/\s+/);
+          if (name === "help") return reply({ output: SLASH.map(([n, m]) => `/${n} — ${m}`).join("\n") });
+          if (name === "plan") return reply({ type: "send", message: `Armá un plan para: ${rest.join(" ") || "revisar el servidor"}`, display: `/plan ${rest.join(" ")}` });
+          if (name === "draft") return reply({ type: "prefill", message: "Escribime un resumen de " });
+          if (name === "compress") return reply({ output: "Contexto comprimido: 12.4k → 3.1k tokens." });
+          return fail(4018, `unknown command: /${name}`);
+        }
+        case "command.dispatch":
+          return fail(4018, `unknown command: /${params.name}`);
+        case "session.undo": {
+          const s = live.get(params.session_id);
+          if (!s) return fail(4004, "session not live");
+          if (s.running) return fail(4009, "session busy");
+          const rows = messages.get(`${s.profile}/${s.stored}`) ?? [];
+          const at = rows.findLastIndex((r) => r.role === "user");
+          const removed = at === -1 ? 0 : rows.splice(at).length;
+          return reply({ removed });
+        }
+        case "session.branch_stored": {
+          const profile = params.profile || "default";
+          const row = sessions.find((r) => r.id === params.parent_session_id && r.profile === profile);
+          if (!row) return fail(4004, "session not found");
+          const stored = `${row.id}_b${(n++).toString(16)}`;
+          sessions.push({ ...row, id: stored, title: params.title || `${row.title} (rama)`, parent_session_id: row.id, last_active: now(), pinned: false });
+          messages.set(`${profile}/${stored}`, (messages.get(`${profile}/${row.id}`) ?? []).map((m) => ({ ...m, session_id: stored })));
+          const rid = `rt_${++runtimeN}`;
+          const s = freshLive(profile, { profile, stored, title: params.title ?? null, ws, created: true });
+          live.set(rid, s);
+          return reply({ session_id: rid, stored_session_id: stored, message_count: 0, messages_omitted: true, info: infoOf(s) });
+        }
         default:
           return fail(-32601, `method not found: ${method}`);
       }
@@ -556,6 +862,9 @@ export function startMockDashboard({
       };
       const finish = (payload) => {
         s.running = false;
+        s.turns = (s.turns ?? 0) + 1;
+        s.usage = { input: 1200 * s.turns, output: 300 * s.turns, total: 1500 * s.turns, calls: s.turns, context_used: 9000 * s.turns, context_max: 200000, context_percent: Math.min(100, 4.5 * s.turns), cost_usd: 0.012 * s.turns };
+        event("session.usage", sid, { usage: s.usage });
         const row = sessions.find((r) => r.id === s.stored && r.profile === s.profile);
         if (row) {
           row.last_active = now();
@@ -566,6 +875,16 @@ export function startMockDashboard({
       const interrupted = (partial) => finish({ text: partial, status: "interrupted" });
 
       event("message.start", sid, {});
+      if (/plan|tareas/i.test(text)) {
+        const todos = [
+          { id: "1", content: "Revisar uptime y carga", status: "completed" },
+          { id: "2", content: "Mirar el uso de disco", status: "in_progress" },
+          { id: "3", content: "Proponer limpieza", status: "pending" },
+        ];
+        const row = sessions.find((r) => r.id === s.stored && r.profile === s.profile);
+        if (row) row.todos = { todos, revision: 1 };
+        event("todo.updated", sid, { todos, revision: 1 });
+      }
       if (!(await stream("reasoning.delta", "Pienso qué revisar primero… ".split(/(?<= )/), 20))) return interrupted("");
       const intro = "Dale, lo reviso en el servidor.";
       if (!(await stream("message.delta", intro.split(/(?<= )/)))) return interrupted(intro);

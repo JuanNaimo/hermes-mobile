@@ -158,6 +158,13 @@ La config (`capacitor.config.ts`) sirve la app desde `http://localhost` en Andro
 puede hablar con un gateway HTTP en tu LAN. En iOS, si tu gateway no tiene TLS, agregá
 `NSAppTransportSecurity → NSAllowsLocalNetworking = YES` en `ios/App/App/Info.plist`.
 
+El dictado usa el micrófono desde la WebView: después de `cap add`, agregá
+`RECORD_AUDIO` y `MODIFY_AUDIO_SETTINGS` como `<uses-permission>` en
+`android/app/src/main/AndroidManifest.xml` (Capacitor pide el permiso al usarlo), y en
+iOS `NSMicrophoneUsageDescription` en `Info.plist`.
+
+Para compilar Android hace falta un JDK 21 (`JAVA_HOME`).
+
 ## Desarrollo sin servidor real
 
 Hay un mock para cada modo:

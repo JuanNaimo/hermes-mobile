@@ -1,26 +1,39 @@
-import { memo, useState, type FormEvent } from "react";
+import { memo, useState, type FormEvent, type ReactNode } from "react";
 import { Spinner } from "@/components/ds";
 import {
   AlertTriangle,
   Brain,
   Check,
   ChevronRight,
+  Copy,
+  Pencil,
+  RotateCcw,
   Info,
   KeyRound,
   MessageCircleQuestion,
   ShieldAlert,
+  Square,
+  Volume2,
   Wrench,
   X,
 } from "lucide-react";
 import type { ChatItem, ClarifyQuestion } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
+import { stopSpeaking, useSpeech } from "@/lib/voice";
 import { Markdown } from "./Markdown";
 
 type Item<K extends ChatItem["kind"]> = Extract<ChatItem, { kind: K }>;
 
-export const UserMessage = memo(function UserMessage({ item }: { item: Item<"user"> }) {
+export const UserMessage = memo(function UserMessage({
+  item,
+  onEdit,
+}: {
+  item: Item<"user">;
+  /** The latest user message can be edited and run again. */
+  onEdit?: () => void;
+}) {
   return (
-    <div className="flex justify-end animate-rise">
+    <div className="flex flex-col items-end gap-1 animate-rise">
       <div
         className={cn(
           "max-w-[85%] sm:max-w-[75%] px-4 py-3",
@@ -42,6 +55,11 @@ export const UserMessage = memo(function UserMessage({ item }: { item: Item<"use
         )}
         {item.text && <p className="whitespace-pre-wrap break-words">{item.text}</p>}
       </div>
+      {onEdit && (
+        <ActionButton onClick={onEdit} icon={<Pencil className="size-3.5" />}>
+          Editar
+        </ActionButton>
+      )}
     </div>
   );
 });
@@ -49,9 +67,15 @@ export const UserMessage = memo(function UserMessage({ item }: { item: Item<"use
 export const AssistantMessage = memo(function AssistantMessage({
   item,
   showReasoning,
+  onSpeak,
+  onRetry,
 }: {
   item: Item<"assistant">;
   showReasoning: boolean;
+  /** Read this reply out loud; without it there is no speaker button. */
+  onSpeak?: (key: string, text: string) => void;
+  /** The latest reply can be generated again. */
+  onRetry?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const thinking = item.streaming && !item.text;
@@ -84,9 +108,76 @@ export const AssistantMessage = memo(function AssistantMessage({
           <Markdown text={item.text} />
         </div>
       )}
+      {!item.streaming && item.text.trim() && (
+        <div className="-ms-2 flex flex-wrap items-center gap-1">
+          <CopyButton text={item.text} />
+          {onSpeak && (
+            // Keyed by text: the live item and the reloaded history item of the same reply match.
+            <SpeakButton onSpeak={() => onSpeak(item.text, item.text)} speechKey={item.text} />
+          )}
+          {onRetry && (
+            <ActionButton onClick={onRetry} icon={<RotateCcw className="size-3.5" />}>
+              Reintentar
+            </ActionButton>
+          )}
+        </div>
+      )}
     </div>
   );
 });
+
+function ActionButton({ onClick, icon, children, label }: { onClick: () => void; icon: ReactNode; children: ReactNode; label?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      className="inline-flex min-h-9 w-fit items-center gap-1.5 rounded-[var(--radius-sm)] px-2 text-xs text-text-tertiary hover:bg-midground/5 hover:text-midground"
+    >
+      {icon}
+      <span>{children}</span>
+    </button>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <ActionButton
+      onClick={() =>
+        void navigator.clipboard?.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        })
+      }
+      icon={copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+    >
+      {copied ? "Copiado" : "Copiar"}
+    </ActionButton>
+  );
+}
+
+function SpeakButton({ speechKey, onSpeak }: { speechKey: string; onSpeak: () => void }) {
+  const speech = useSpeech();
+  const mine = speech?.key === speechKey ? speech.phase : null;
+  return (
+    <button
+      type="button"
+      onClick={() => (mine ? stopSpeaking() : onSpeak())}
+      aria-label={mine ? "Dejar de leer" : "Escuchar"}
+      className="inline-flex min-h-9 w-fit items-center gap-1.5 rounded-[var(--radius-sm)] px-2 text-xs text-text-tertiary hover:bg-midground/5 hover:text-midground"
+    >
+      {mine === "loading" ? (
+        <Spinner />
+      ) : mine === "playing" ? (
+        <Square className="size-3.5 fill-current" />
+      ) : (
+        <Volume2 className="size-4" />
+      )}
+      <span>{mine === "loading" ? "Generando audio…" : mine === "playing" ? "Detener" : "Escuchar"}</span>
+    </button>
+  );
+}
 
 export const ToolActivity = memo(function ToolActivity({ item }: { item: Item<"tool"> }) {
   const [open, setOpen] = useState(false);
@@ -216,7 +307,7 @@ export function Notice({ item }: { item: Item<"notice"> }) {
       )}
     >
       {error ? <AlertTriangle className="mt-0.5 size-4 shrink-0" /> : <Info className="mt-0.5 size-4 shrink-0" />}
-      <span className="break-words">{item.text}</span>
+      <span className="min-w-0 break-words whitespace-pre-wrap">{item.text}</span>
     </div>
   );
 }

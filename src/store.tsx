@@ -16,7 +16,7 @@ import { connectionKey, isDashboard, type AnyConnection } from "@/lib/connection
 import { loadJSON, saveJSON } from "@/lib/utils";
 import { applyTheme, findTheme, type TextSize } from "@/themes/presets";
 
-export type View = "chat" | "jobs" | "skills" | "server";
+export type View = "chat" | "jobs" | "skills" | "bots" | "server";
 
 interface Settings {
   theme: string;
@@ -24,6 +24,8 @@ interface Settings {
   /** Enter sends (hardware keyboards); otherwise Enter inserts a newline. */
   enterSends: boolean;
   showReasoning: boolean;
+  /** Read each finished reply out loud (dashboard mode). */
+  autoSpeak: boolean;
 }
 
 const DEFAULT_SETTINGS: Settings = {
@@ -31,6 +33,7 @@ const DEFAULT_SETTINGS: Settings = {
   textSize: "normal",
   enterSends: true,
   showReasoning: true,
+  autoSpeak: false,
 };
 
 interface Toast {
@@ -159,8 +162,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [key, hasAuth]);
 
   // One gateway socket per login; opened lazily by the first chat call.
+  // `refreshSessions` is declared below; the gateway only calls this later, from events.
+  const refreshRef = useRef<() => void>(() => {});
   const chat = useMemo(
-    () => (dashboard ? new DashboardChat(dashboard, { onStatus: (status, detail) => setChatStatus({ status, detail }) }) : null),
+    () =>
+      dashboard
+        ? new DashboardChat(dashboard, {
+            onStatus: (status, detail) => setChatStatus({ status, detail }),
+            onSessionsChanged: () => refreshRef.current(),
+          })
+        : null,
     [dashboard],
   );
   useEffect(() => () => chat?.close(), [chat]);
@@ -266,6 +277,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (client || dashboard) void refreshSessions();
   }, [client, dashboard, refreshSessions]);
+
+  // Server-side changes (titles, sessions from other clients) arrive in bursts: refetch once.
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    refreshRef.current = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => void refreshSessions(), 600);
+    };
+    return () => clearTimeout(timer);
+  }, [refreshSessions]);
 
   useEffect(() => {
     if (!dashboard) return;

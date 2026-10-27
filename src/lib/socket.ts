@@ -69,28 +69,42 @@ interface NativeWebSocketPlugin {
   ): Promise<{ remove: () => Promise<void> }>;
 }
 
-let plugin: Promise<NativeWebSocketPlugin> | null = null;
+/**
+ * Boxed: a Capacitor plugin is a Proxy that answers every property, `then`
+ * included, so resolving a promise with it bare makes JS call a native
+ * `then()` that doesn't exist and the promise never settles.
+ */
+let plugin: Promise<{ p: NativeWebSocketPlugin }> | null = null;
 const native = new Map<string, SocketHandlers>();
 /** Events for an id whose `connect` promise hasn't resolved yet. */
 const early = new Map<string, Array<() => void>>();
+/** Long past any connect round-trip: events still parked by then have no socket to go to. */
+const EARLY_TTL_MS = 30_000;
 
-function nativePlugin(): Promise<NativeWebSocketPlugin> {
-  plugin ??= import("@capacitor/core").then(async ({ registerPlugin }) => {
-    const p = registerPlugin<NativeWebSocketPlugin>("NativeWebSocket");
-    const route = <E extends keyof NativeEvents>(event: E, fn: (h: SocketHandlers, d: NativeEvents[E]) => void) =>
-      p.addListener(event, (d) => {
-        const h = native.get(d.id);
-        if (h) fn(h, d);
-        else early.set(d.id, [...(early.get(d.id) ?? []), () => native.get(d.id) && fn(native.get(d.id)!, d)]);
+function nativePlugin(): Promise<{ p: NativeWebSocketPlugin }> {
+  plugin ??= import("@capacitor/core")
+    .then(async ({ registerPlugin }) => {
+      const p = registerPlugin<NativeWebSocketPlugin>("NativeWebSocket");
+      const route = <E extends keyof NativeEvents>(event: E, fn: (h: SocketHandlers, d: NativeEvents[E]) => void) =>
+        p.addListener(event, (d) => {
+          const h = native.get(d.id);
+          if (h) return fn(h, d);
+          if (!early.has(d.id)) setTimeout(() => early.delete(d.id), EARLY_TTL_MS);
+          early.set(d.id, [...(early.get(d.id) ?? []), () => native.get(d.id) && fn(native.get(d.id)!, d)]);
+        });
+      await route("open", (h) => h.onOpen());
+      await route("message", (h, d) => h.onMessage(d.data));
+      await route("close", (h, d) => {
+        native.delete(d.id);
+        h.onClose(d.code, d.reason, d.wasOpen);
       });
-    await route("open", (h) => h.onOpen());
-    await route("message", (h, d) => h.onMessage(d.data));
-    await route("close", (h, d) => {
-      native.delete(d.id);
-      h.onClose(d.code, d.reason, d.wasOpen);
+      return { p };
+    })
+    .catch((err) => {
+      // Don't cache a failed registration: the next socket tries again.
+      plugin = null;
+      throw err;
     });
-    return p;
-  });
   return plugin;
 }
 
@@ -98,26 +112,36 @@ export const nativeSocket: SocketFactory = (url, h) => {
   let id: string | null = null;
   let closeRequested: { code: number; reason: string } | null = null;
 
+  const close = (code: number, reason: string) => {
+    if (!id) closeRequested = { code, reason };
+    else void nativePlugin().then(({ p }) => p.close({ id: id!, code, reason }));
+  };
+
   void nativePlugin()
-    .then((p) => p.connect({ url }))
-    .then(({ id: socketId }) => {
-      id = socketId;
-      native.set(socketId, h);
-      early.get(socketId)?.forEach((replay) => replay());
-      early.delete(socketId);
-      if (closeRequested) void nativePlugin().then((p) => p.close({ id: socketId, ...closeRequested! }));
-    })
-    .catch((err) => h.onClose(1006, err instanceof Error ? err.message : String(err), false));
+    .then(({ p }) => p.connect({ url }))
+    .then(
+      ({ id: socketId }) => {
+        id = socketId;
+        native.set(socketId, h);
+        early.get(socketId)?.forEach((replay) => replay());
+        early.delete(socketId);
+        if (closeRequested) close(closeRequested.code, closeRequested.reason);
+      },
+      // Only a failed connect lands here; a throwing handler in the replay above must not
+      // read as a handshake failure for a socket that is open.
+      (err) => h.onClose(1006, err instanceof Error ? err.message : String(err), false),
+    );
 
   return {
     send(text) {
       // onOpen (the only point the caller starts sending) is replayed after `id` is known.
       if (!id) throw new Error("socket not open");
-      void nativePlugin().then((p) => p.send({ id: id!, data: text }));
+      // A frame the native side couldn't send is lost: close, so the caller hears a
+      // disconnect instead of waiting out its request timeout.
+      void nativePlugin()
+        .then(({ p }) => p.send({ id: id!, data: text }))
+        .catch(() => close(1011, "send failed"));
     },
-    close(code = 1000, reason = "") {
-      if (!id) closeRequested = { code, reason };
-      else void nativePlugin().then((p) => p.close({ id: id!, code, reason }));
-    },
+    close: (code = 1000, reason = "") => close(code, reason),
   };
 };

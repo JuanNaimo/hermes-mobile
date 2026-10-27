@@ -241,6 +241,9 @@ function AppearancePanel() {
             onCheckedChange={(on) => updateSettings({ showReasoning: on })}
           />
         </Setting>
+        <Setting label="Leer respuestas en voz alta" hint="Modo dashboard: cada respuesta se lee al terminar, con la voz configurada en el servidor">
+          <Switch checked={settings.autoSpeak} onCheckedChange={(on) => updateSettings({ autoSpeak: on })} />
+        </Setting>
       </div>
     </Panel>
   );
