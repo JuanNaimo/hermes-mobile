@@ -375,6 +375,25 @@ export class DashboardClient {
   // -- models (hermes_cli/web_routers/models.py) ------------------------------------
 
   /** The profile's model catalog, for a chat that has no session yet. */
+  /**
+   * The profile's default model (what new sessions start with): `config.yaml`
+   * `model.default` / `model.provider`. An expensive pick comes back asking for
+   * confirmation first.
+   */
+  async setDefaultModel(
+    profile: string,
+    model: string,
+    provider: string,
+    confirm = false,
+  ): Promise<{ status: "ok" } | { status: "confirm"; message: string }> {
+    const res = await this.request<{ ok?: boolean; confirm_required?: boolean; confirm_message?: string }>("/api/model/set", {
+      method: "POST",
+      json: { scope: "main", model, provider, profile, confirm_expensive_model: confirm },
+    });
+    if (res?.confirm_required) return { status: "confirm", message: res.confirm_message || `¿Usar ${model}?` };
+    return { status: "ok" };
+  }
+
   async modelOptions(profile: string): Promise<ModelOptions> {
     const q = new URLSearchParams({ profile, explicit_only: "true" });
     return normalizeModelOptions(await this.request(`/api/model/options?${q}`));

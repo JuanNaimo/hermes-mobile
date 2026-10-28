@@ -233,3 +233,15 @@ test("searches message content on the server, in each profile asked for", async 
   assert.match(hit.snippet ?? "", />>>.+<<</);
   assert.deepEqual(await client.searchSessions("zzzz-nada", ["default"]), []);
 });
+
+test("sets a profile's default model, asking first for an expensive one", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  assert.deepEqual(await client.setDefaultModel("tech-insider", "anthropic/claude-sonnet", "openrouter"), { status: "ok" });
+  assert.equal((await client.profiles()).find((p) => p.name === "tech-insider")?.model, "anthropic/claude-sonnet");
+  const ask = await client.setDefaultModel("tech-insider", "anthropic/claude-opus", "openrouter");
+  assert.equal(ask.status, "confirm");
+  assert.equal((await client.profiles()).find((p) => p.name === "tech-insider")?.model, "anthropic/claude-sonnet", "unchanged until confirmed");
+  await client.setDefaultModel("tech-insider", "anthropic/claude-opus", "openrouter", true);
+  assert.equal((await client.profiles()).find((p) => p.name === "tech-insider")?.model, "anthropic/claude-opus");
+  await client.setDefaultModel("tech-insider", "openai/gpt-5", "openrouter");
+});

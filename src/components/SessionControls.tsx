@@ -74,14 +74,36 @@ export function SessionControls({
 
   const fail = (err: unknown) => onError(err instanceof Error ? err.message : String(err));
 
-  async function pickModel(p: ModelProvider, m: string) {
+  /** The profile's default too: returns false when the person declined an expensive model. */
+  async function saveDefault(p: ModelProvider, m: string): Promise<boolean> {
+    let res = await chat.setDefaultModel(profile, m, p.slug);
+    if (res.status === "confirm") {
+      if (!window.confirm(res.message)) return false;
+      res = await chat.setDefaultModel(profile, m, p.slug, true);
+    }
+    onNotice(`${shortModelName(m)} es el modelo predeterminado de ${profile}`);
+    return true;
+  }
+
+  async function pickModel(p: ModelProvider, m: string, asDefault: boolean) {
     if (!sessionId) {
+      if (asDefault) {
+        setSaving("model");
+        try {
+          if (!(await saveDefault(p, m))) return;
+        } catch (err) {
+          return fail(err);
+        } finally {
+          setSaving(null);
+        }
+      }
       onDraftChange({ ...draft, model: m, provider: p.slug });
       setSheet(null);
       return;
     }
     setSaving("model");
     try {
+      if (asDefault && !(await saveDefault(p, m))) return;
       let res = await chat.setModel(sessionId, profile, m, p.slug);
       if (res.status === "confirm") {
         if (!window.confirm(res.message)) return;
@@ -176,7 +198,8 @@ export function SessionControls({
         model={model}
         provider={provider}
         saving={saving === "model"}
-        onPick={(p, m) => void pickModel(p, m)}
+        profile={profile}
+        onPick={(p, m, asDefault) => void pickModel(p, m, asDefault)}
         onRefresh={() =>
           chat
             .modelOptions(sessionId, profile, true)
@@ -212,6 +235,7 @@ function ModelSheet({
   saving,
   onPick,
   onRefresh,
+  profile,
 }: {
   open: boolean;
   onClose: () => void;
@@ -219,13 +243,18 @@ function ModelSheet({
   model?: string;
   provider?: string;
   saving: boolean;
-  onPick: (p: ModelProvider, model: string) => void;
+  onPick: (p: ModelProvider, model: string, asDefault: boolean) => void;
   onRefresh: () => Promise<void>;
+  profile: string;
 }) {
   const [query, setQuery] = useState("");
+  const [asDefault, setAsDefault] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   useEffect(() => {
-    if (!open) setQuery("");
+    if (!open) {
+      setQuery("");
+      setAsDefault(false);
+    }
   }, [open]);
 
   const groups = useMemo(() => {
@@ -266,6 +295,15 @@ function ModelSheet({
           {refreshing ? <Spinner /> : <RefreshCw className="size-4" />}
         </button>
       </div>
+      <label className="flex min-h-11 items-center gap-3 border-b border-current/10 px-4 text-sm text-text-secondary">
+        <input
+          type="checkbox"
+          checked={asDefault}
+          onChange={(e) => setAsDefault(e.target.checked)}
+          className="size-4 accent-[var(--color-midground)]"
+        />
+        También como predeterminado de <span className="font-mono text-midground">{profile}</span>
+      </label>
       {!options ? (
         <div className="flex justify-center p-8 text-text-secondary">
           <Spinner />
@@ -288,7 +326,7 @@ function ModelSheet({
                     key={m}
                     selected={m === model && providerMatches(p, provider)}
                     disabled={p.authenticated === false}
-                    onClick={() => onPick(p, m)}
+                    onClick={() => onPick(p, m, asDefault)}
                   >
                     <span className="min-w-0 flex-1 truncate font-mono text-sm">{m}</span>
                     {price && (

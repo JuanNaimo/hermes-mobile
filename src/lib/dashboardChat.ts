@@ -493,6 +493,11 @@ export class DashboardChat {
 
   // -- session settings ----------------------------------------------------------
 
+  /** The profile's default model for new sessions (REST, not the session). */
+  setDefaultModel(profile: string, model: string, provider: string, confirm = false) {
+    return this.dashboard.setDefaultModel(profile, model, provider, confirm);
+  }
+
   /**
    * Authority mode's fenced edit. A fence refusal that names fresh fences is
    * retried once at them for value picks (re-applying a model or effort is

@@ -585,6 +585,17 @@ export function startMockDashboard({
         else if (bots.wa.polls >= 1) Object.assign(bots.wa, { status: "waiting", qr_payload: "2@mock-whatsapp-qr,abc,def" });
         return json(res, 200, bots.wa);
       }
+      if (path === "/api/model/set" && req.method === "POST") {
+        const b = await body(req);
+        if (!["main", "auxiliary"].includes(b.scope)) return detail(res, 400, "scope must be 'main' or 'auxiliary'");
+        const p = profiles.find((x) => x.name === (b.profile || q.get("profile") || "default"));
+        if (!p) return detail(res, 404, "Profile not found");
+        if (EXPENSIVE.has(b.model) && !b.confirm_expensive_model) {
+          return json(res, 200, { ok: false, scope: b.scope, provider: b.provider, model: b.model, confirm_required: true, confirm_message: `${b.model} cuesta $15/$75 por millón de tokens. ¿Usarlo igual?` });
+        }
+        if (b.scope === "main") Object.assign(p, { model: b.model, provider: b.provider });
+        return json(res, 200, { ok: true, scope: b.scope, provider: b.provider, model: b.model });
+      }
       if (path === "/api/model/options") {
         const profile = q.get("profile") || "default";
         const p = profiles.find((x) => x.name === profile);
