@@ -11,7 +11,7 @@ Estado al 27/10/2026. Pensado para seguir en una sesión en la nube (Claude Code
   - `apps/desktop/src/app/*`: la referencia de paridad con Desktop.
 - **Probar sin servidor real**:
   - `node scripts/mock-dashboard.mjs` levanta el mock en `:9119` (usuario `hermes` / clave `hermes`), y `pnpm dev` levanta la app.
-  - `pnpm typecheck` y `pnpm test` corren los tests de node contra el mock (hoy pasan 55).
+  - `pnpm typecheck` y `pnpm test` corren los tests de node contra el mock (hoy pasan 60).
   - El mock solo implementa el **modo legacy**. Todo lo nuevo tiene que entrar al mock y a `tests/` en el mismo cambio.
 - **En la nube no se puede**:
   - Compilar el APK: necesita JDK 21 y el SDK de Android, y `android/` está en `.gitignore`.
@@ -47,7 +47,7 @@ Nada de esto se probó todavía fuera del mock.
 - [ ] **Archivos**: un PDF real por `file.attach` (límite de la app: 20 MB) y que el agente lo lea con la ref `@file:`.
 - [ ] **Subagentes, `/btw`, `/background`, webhooks, búsqueda y modelo por defecto** contra el servidor real: forma
   real de los eventos `subagent.*`, `btw.complete`/`background.complete`, `/api/webhooks*`, `/api/sessions/search` y
-  `/api/model/set`.
+  `/api/model/set`; reacciones (`message.react`, que el agente las vea), `/api/config` y `/api/fs/read-data-url`.
 - [ ] **Línea de estado**: qué textos manda `status.update` en la práctica (la app oculta `"ready"`).
 - [ ] **Reinicio del gateway** en Bots: que `/api/actions/gateway-restart/status` y `/api/status?profile=` alcancen para
   saber cuándo volvió.
@@ -81,7 +81,16 @@ En orden de prioridad sugerido. Para cada uno: leer la carpeta de Desktop y el e
    lo guarda con `POST /api/model/set {scope: "main"}` (con la confirmación de modelos caros).
 9. ✅ **Webhooks** (28/10): sección en Bots: activar la plataforma, crear (el secreto se muestra una sola vez, con
    copiar), pausar y borrar, por perfil (`/api/webhooks*`).
-10. Menor prioridad: reacciones, artifacts (`app/artifacts`), import de sesiones (`app/session-import`), ajustes de config (`app/settings`).
+10. ✅ (28/10)
+    - **Ajustes curados** en Servidor, por perfil: personalidad, zona horaria, mostrar razonamiento, reacciones,
+      aprobación de comandos, comandos permitidos, checkpoints y memoria (`PUT /api/config` parcial). A propósito
+      no es el editor completo del esquema.
+    - **Reacciones**: los 6 tapbacks de Desktop con `message.react`, y las del agente en vivo (`message.reaction`).
+      Solo con "Reacciones" activado en el perfil (`display.message_reactions`), como en Desktop.
+    - **Archivos y links** (menú de la sesión): los de la conversación abierta y una galería de las sesiones
+      recientes, de a 20 (cada una es una lectura del historial). Los archivos del servidor se abren con
+      `/api/fs/read-data-url` (16 MB máximo).
+    - **Importar sesiones** (Claude Code / Codex del servidor): descartado, no se usan en ese servidor.
 
 ## 3. Deuda conocida
 

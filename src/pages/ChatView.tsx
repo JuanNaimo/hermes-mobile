@@ -30,6 +30,7 @@ import {
   type ReactionProps,
 } from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
+import { ArtifactsSheet } from "@/components/ArtifactsSheet";
 import { SessionControls } from "@/components/SessionControls";
 import { ContextMeter, QueueStrip, SessionMenu, StatusLine, SubagentStrip, TodoStrip, type SessionAction } from "@/components/SessionPanels";
 import { describeActivity } from "@/lib/activity";
@@ -40,8 +41,8 @@ import { getPath } from "@/lib/hermesSettings";
 import { useLive } from "@/lib/sessionLive";
 import { EmptyState, IconButton, SectionLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
-import { isNativeApp } from "@/lib/http";
 import { blobToDataUrl, speak, stopSpeaking } from "@/lib/voice";
+import { shareOrDownload } from "@/lib/share";
 
 const SUGGESTIONS = [
   "¿Qué podés hacer en este servidor?",
@@ -119,6 +120,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   /** Output of slash commands run here, shown under the transcript until the next reload. */
   const [slashNotes, setSlashNotes] = useState<ChatItem[]>([]);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
 
   const [history, setHistory] = useState<ChatItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -368,6 +370,9 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     const fail = (err: unknown) => notify(err instanceof Error ? err.message : String(err), "error");
     try {
       switch (action) {
+        case "files":
+          setArtifactsOpen(true);
+          return;
         case "rename": {
           const title = window.prompt("Nuevo título", session?.title ?? "");
           if (title == null || !title.trim()) return;
@@ -408,18 +413,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
 
   /** Share sheet where there is one (files), a download in browsers, the clipboard otherwise. */
   async function exportJson(json: string, filename: string) {
-    const file = new File([json], filename, { type: "application/json" });
-    if (navigator.canShare?.({ files: [file] })) {
-      await navigator.share({ files: [file], title: filename });
-      return;
-    }
-    if (!isNativeApp()) {
-      const url = URL.createObjectURL(file);
-      const a = Object.assign(document.createElement("a"), { href: url, download: filename });
-      a.click();
-      URL.revokeObjectURL(url);
-      return;
-    }
+    if (await shareOrDownload(new File([json], filename, { type: "application/json" }))) return;
     await navigator.clipboard.writeText(json);
     notify("Exportación copiada al portapapeles");
   }
@@ -555,6 +549,19 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
               busy={busy}
               onAction={(a) => void sessionAction(a)}
             />
+            {dashboard && (
+              <ArtifactsSheet
+                open={artifactsOpen}
+                onClose={() => setArtifactsOpen(false)}
+                dashboard={dashboard}
+                sessionId={activeSessionId}
+                profile={sessionProfile}
+                sessionTitle={session.title || session.preview || "Sesión"}
+                profileFilter={profileFilter}
+                onOpenSession={(id, profile) => setActiveSessionId(id, profile)}
+                onError={(m) => notify(m, "error")}
+              />
+            )}
           </>
         )}
         {session && client && (

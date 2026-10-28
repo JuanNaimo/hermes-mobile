@@ -135,3 +135,33 @@ test("stored reactions come out of display_metadata, as JSON or an object", asyn
   assert.ok(u.kind === "user" && u.rowId === 3 && u.reactions?.[0].emoji === "❤️");
   assert.ok(a.kind === "assistant" && a.rowId === 4 && a.reactions === undefined);
 });
+
+test("artifacts: replies' images, links and paths, tool deliveries and attached files", async () => {
+  const { extractArtifacts } = await import("../src/lib/artifacts.ts");
+  const list = extractArtifacts(
+    [
+      { role: "user", content: "@file:attachments/informe.pdf\n\nresumilo" },
+      {
+        role: "assistant",
+        content:
+          "Mirá ![gráfico](https://x.dev/chart.png), el [repo](https://github.com/a/b) y lo guardé en /home/hermes/out/resumen.md. MEDIA:/tmp/voz.ogg",
+      },
+      { role: "tool", content: JSON.stringify({ output_file: "/home/hermes/out/data.csv", log: "Downloading https://pypi.org/packages/x/y.whl" }) },
+      { role: "tool", content: "Collecting foo\n  Downloading https://files.pythonhosted.org/packages/a/foo-1.0-py3-none-any.whl" },
+      { role: "assistant", content: "Otra vez https://github.com/a/b" },
+    ],
+    { id: "s1", profile: "default", title: "Prueba" },
+  );
+  assert.deepEqual(
+    list.map((a) => [a.kind, a.value]),
+    [
+      ["file", "attachments/informe.pdf"],
+      ["image", "https://x.dev/chart.png"],
+      ["link", "https://github.com/a/b"],
+      ["file", "/home/hermes/out/resumen.md"],
+      ["file", "/tmp/voz.ogg"],
+      ["file", "/home/hermes/out/data.csv"],
+    ],
+  );
+  assert.equal(list[1].label, "chart.png");
+});

@@ -68,7 +68,10 @@ Se elige en **Servidor → Apariencia**.
   `/btw` hace una pregunta al costado y `/background` lanza una tarea aparte, sin cortar el
   turno; los subagentes que delega Hermes se ven como árbol arriba del compositor. El
   buscador del sidebar también busca dentro de las conversaciones, el selector de modelo
-  puede fijar el predeterminado del perfil, y en Bots se administran los webhooks.
+  puede fijar el predeterminado del perfil, y en Bots se administran los webhooks. En
+  Servidor hay ajustes de Hermes por perfil (personalidad, aprobaciones, memoria…); con
+  "Reacciones" activado se puede reaccionar a los mensajes, y el menú de cada sesión junta
+  sus archivos y links.
 - **API key (API server, `:8642`)**: el modo original, completo, con una
   `API_SERVER_KEY` por perfil.
 
@@ -226,6 +229,8 @@ src/
 │   ├── activity.ts     # la línea "qué está haciendo" de un turno en curso
 │   ├── sessionLive.ts  # modelo, uso, todos, estado, subagentes y /btw de cada sesión
 │   ├── subagents.ts    # eventos subagent.* → árbol de subagentes
+│   ├── artifacts.ts    # imágenes, archivos y links de los mensajes de una sesión
+│   ├── hermesSettings.ts / serverConfig.ts # ajustes curados y config.yaml por perfil
 │   └── runs.ts         # turnos en curso y la cola de mensajes, fuera de React
 ├── components/         # sidebar, composer, mensajes, markdown, primitivas táctiles
 │   └── ProfileChips.tsx# filtro de perfiles (sidebar, jobs, skills)

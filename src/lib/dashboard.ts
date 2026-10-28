@@ -365,8 +365,8 @@ export class DashboardClient {
   }
 
   /** Sessions across every profile (`profile="all"`) or one, most recent first. */
-  async sessions(profile = "all", limit = 200): Promise<DashboardSession[]> {
-    const q = new URLSearchParams({ profile, limit: String(limit), order: "recent" });
+  async sessions(profile = "all", limit = 200, offset = 0): Promise<DashboardSession[]> {
+    const q = new URLSearchParams({ profile, limit: String(limit), order: "recent", ...(offset ? { offset: String(offset) } : {}) });
     const res = await this.request<{ sessions?: DashboardSession[] }>(`/api/profiles/sessions?${q}`);
     return res?.sessions ?? [];
   }
@@ -385,6 +385,17 @@ export class DashboardClient {
       }),
     );
     return lists.flat();
+  }
+
+  /**
+   * A file on the server as a data URL (16 MB at most). With `sessionId`, a
+   * relative path resolves against that session's workspace.
+   */
+  async readFile(path: string, profile: string, sessionId?: string): Promise<string> {
+    const q = new URLSearchParams({ path, profile, ...(sessionId ? { session_id: sessionId } : {}) });
+    const res = await this.request<{ dataUrl?: string }>(`/api/fs/read-data-url?${q}`);
+    if (!res?.dataUrl) throw new Error("El servidor no devolvió el archivo");
+    return res.dataUrl;
   }
 
   async messages(sessionId: string, profile: string): Promise<Message[]> {

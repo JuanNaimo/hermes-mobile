@@ -17,6 +17,41 @@
 import http from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { WebSocketServer } from "ws";
+import { deflateSync } from "node:zlib";
+
+/** A solid-color PNG (for artifact previews), built by hand: signature, IHDR, IDAT, IEND. */
+function squarePng(size, [r, g, b]) {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (buf) => {
+    let c = 0xffffffff;
+    for (const byte of buf) c = crcTable[(c ^ byte) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const sum = Buffer.alloc(4);
+    sum.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, sum]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  const row = Buffer.concat([Buffer.from([0]), Buffer.from(Array.from({ length: size }, () => [r, g, b]).flat())]);
+  const raw = Buffer.concat(Array.from({ length: size }, () => row));
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk("IHDR", ihdr),
+    chunk("IDAT", deflateSync(raw)),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
 
 export function startMockDashboard({
   port = Number(process.env.PORT ?? 9119),
@@ -105,6 +140,10 @@ export function startMockDashboard({
     { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "terminal", arguments: '{"command":"df -h /mnt/nas"}' } }] },
     { role: "tool", tool_call_id: "c1", tool_name: "terminal", content: "/dev/sdb1  3.6T  2.1T  1.5T  59% /mnt/nas" },
     { role: "assistant", content: "El volumen **/mnt/nas** está al **59%** (1.5 TB libres)." },
+    { role: "user", content: "Haceme un gráfico y guardá los datos" },
+    { role: "assistant", content: "", tool_calls: [{ id: "c2", type: "function", function: { name: "execute_code", arguments: '{"code":"plot()"}' } }] },
+    { role: "tool", tool_call_id: "c2", tool_name: "execute_code", content: JSON.stringify({ output_file: "/home/hermes/reportes/nas-uso.png", exit_code: 0 }) },
+    { role: "assistant", content: "Listo: MEDIA:/home/hermes/reportes/nas-uso.png y los datos en /home/hermes/reportes/nas.csv. Guía de Synology: https://kb.synology.com/es-es/DSM/help" },
   ], 120);
   addSession("default", "Plan de la semana", "desktop", [
     { role: "user", content: "Armame un plan para esta semana" },
@@ -173,6 +212,12 @@ export function startMockDashboard({
     memory: { memory_enabled: true, user_profile_enabled: true }, personalities: { "asistente-nas": "Sos el admin del NAS." },
   };
   const profileConfigs = {};
+  /** Files the fs routes can serve: absolute paths, or `${storedSession}:${relative}` for attachments. */
+  const serverFiles = new Map([
+    ["/home/hermes/reportes/nas-uso.png", squarePng(96, [0x1a, 0xb0, 0x9a])],
+    ["/home/hermes/reportes/nas.csv", Buffer.from("fecha,usado_tb\n2026-10-01,1.9\n2026-10-28,2.1\n")],
+  ]);
+
   /** One reaction per author on a stored row (hermes_state_messages.set_message_reaction); null clears. */
   function setReaction(row, emoji, author) {
     let meta = {};
@@ -495,6 +540,15 @@ export function startMockDashboard({
         const profile = q.get("profile") || "default";
         if (!knownProfile(profile)) return detail(res, 404, `Profile '${profile}' does not exist.`);
         return json(res, 200, toolsetsFor(profile));
+      }
+      if (path === "/api/fs/read-data-url" && req.method === "GET") {
+        const p = q.get("path") ?? "";
+        const sid = q.get("session_id");
+        const bytes = serverFiles.get(p) ?? (sid ? serverFiles.get(`${sid}:${p}`) : undefined);
+        if (!bytes) return detail(res, 404, "File not found");
+        const ext = p.split(".").pop().toLowerCase();
+        const mime = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", csv: "text/csv", pdf: "application/pdf", txt: "text/plain", md: "text/markdown" }[ext] ?? "application/octet-stream";
+        return json(res, 200, { dataUrl: `data:${mime};base64,${bytes.toString("base64")}` });
       }
       if (path === "/api/sessions/search") {
         // Ids first, then message content, one hit per session; FTS snippets mark the match >>>…<<<.
@@ -948,6 +1002,7 @@ export function startMockDashboard({
           s.files = s.files ?? new Map();
           for (let n = 2; s.files.has(name); n++) name = name.replace(/(-\d+)?(\.[^.]*)?$/, (_, _n, ext = "") => `-${n}${ext}`);
           s.files.set(name, bytes);
+          serverFiles.set(`${s.stored}:attachments/${name}`, bytes);
           const ref = `attachments/${name}`;
           const quoted = /[\s()[\]{}"'`]/.test(ref) ? `"${ref}"` : ref;
           return reply({ attached: true, name, path: `/home/hermes/${ref}`, ref_path: ref, ref_text: `@file:${quoted}`, uploaded: true });

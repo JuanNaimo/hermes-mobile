@@ -8,6 +8,7 @@ import {
   Circle,
   CircleDot,
   Download,
+  FolderOpen,
   GitFork,
   GitBranch,
   ListPlus,
@@ -27,7 +28,7 @@ import { cn } from "@/lib/utils";
 
 // -- session actions ------------------------------------------------------------------
 
-export type SessionAction = "rename" | "pin" | "archive" | "branch" | "export" | "delete";
+export type SessionAction = "rename" | "pin" | "files" | "archive" | "branch" | "export" | "delete";
 
 /** Rename, pin, archive, branch, export and delete, in one sheet for small screens. */
 export function SessionMenu({
@@ -47,6 +48,7 @@ export function SessionMenu({
   const rows: { action: SessionAction; label: string; icon: typeof Pin; danger?: boolean; off?: boolean }[] = [
     { action: "rename", label: "Renombrar", icon: Pencil },
     { action: "pin", label: pinned ? "Desfijar" : "Fijar arriba", icon: pinned ? PinOff : Pin },
+    { action: "files", label: "Archivos y links", icon: FolderOpen },
     { action: "branch", label: "Ramificar en una sesión nueva", icon: GitBranch, off: busy },
     { action: "export", label: "Exportar (JSON)", icon: Download },
     { action: "archive", label: "Archivar", icon: Archive },

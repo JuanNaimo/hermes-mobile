@@ -284,3 +284,17 @@ test("config: partial updates deep-merge into the profile's config.yaml", async 
   assert.deepEqual(after.command_allowlist, ["git status"]);
   assert.equal(getPath(await client.config("tech-insider"), "display.personality"), "", "per profile");
 });
+
+test("artifacts of a stored session, and their files through /api/fs/read-data-url", async () => {
+  const { extractArtifacts } = await import("../src/lib/artifacts.ts");
+  // Its own server: other tests edit and delete the seeded sessions.
+  const own = await startMockDashboard({ port: 0, log: false });
+  after(() => own.close());
+  const client = new DashboardClient(base(own), await dashboardLogin({ baseUrl: base(own), username: "hermes", password: "hermes" }));
+  const nas = (await client.sessions("default")).find((s) => s.title === "Revisión del NAS")!;
+  const found = extractArtifacts(await client.messages(nas.id, "default"), { id: nas.id, profile: "default", title: nas.title ?? "" });
+  assert.deepEqual(found.map((a) => [a.kind, a.label]), [["image", "nas-uso.png"], ["file", "nas.csv"], ["link", "kb.synology.com › help"]]);
+  const png = await client.readFile(found[0].value, "default", nas.id);
+  assert.match(png, /^data:image\/png;base64,iVBORw0KGgo/);
+  await assert.rejects(client.readFile("/etc/shadow", "default"), /not found/i);
+});
