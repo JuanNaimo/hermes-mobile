@@ -255,6 +255,20 @@ export async function refreshTokens(baseUrl: string, tokens: DashboardTokens): P
 /** Refresh this long before the access token expires. */
 const REFRESH_MARGIN_S = 120;
 
+/** `GET /api/sessions/search` result (hermes_cli/web_routers/sessions.py, subset). */
+export interface SessionSearchHit {
+  session_id: string;
+  profile: string;
+  title?: string | null;
+  preview?: string | null;
+  /** FTS excerpt with the match between `>>>` and `<<<`; absent for an id match. */
+  snippet?: string;
+  role?: string | null;
+  last_active?: number | null;
+  session_started?: number | null;
+  archived?: boolean;
+}
+
 export class DashboardClient {
   readonly baseUrl: string;
   private tokens: DashboardTokens;
@@ -332,6 +346,22 @@ export class DashboardClient {
     const q = new URLSearchParams({ profile, limit: String(limit), order: "recent" });
     const res = await this.request<{ sessions?: DashboardSession[] }>(`/api/profiles/sessions?${q}`);
     return res?.sessions ?? [];
+  }
+
+  /**
+   * Full-text search over stored sessions (ids first, then message content),
+   * one request per profile since the endpoint takes a single one. Snippets
+   * mark the match as `>>>…<<<`.
+   */
+  async searchSessions(q: string, profiles: string[], limit = 20): Promise<SessionSearchHit[]> {
+    const lists = await Promise.all(
+      profiles.map(async (profile) => {
+        const params = new URLSearchParams({ q, profile, limit: String(limit) });
+        const res = await this.request<{ results?: SessionSearchHit[] }>(`/api/sessions/search?${params}`);
+        return (res?.results ?? []).map((hit) => ({ ...hit, profile: hit.profile || profile }));
+      }),
+    );
+    return lists.flat();
   }
 
   async messages(sessionId: string, profile: string): Promise<Message[]> {

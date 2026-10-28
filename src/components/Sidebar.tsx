@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Spinner } from "@/components/ds";
 import {
   CalendarClock,
@@ -17,6 +17,7 @@ import {
 import { connectionKey, isDashboard, type AnyConnection } from "@/lib/connection";
 import { useApp, type View } from "@/store";
 import { busySessions, useRunsVersion } from "@/lib/runs";
+import type { SessionSearchHit } from "@/lib/dashboard";
 import { cn, relativeTime } from "@/lib/utils";
 import { IconButton, SectionLabel, StatusDot } from "./ui";
 import { Wordmark } from "./Brand";
@@ -56,6 +57,7 @@ export function Sidebar({
     profiles,
     profileFilter,
     setProfileFilter,
+    dashboard,
   } = useApp();
   const dashboardMode = isDashboard(connection);
   useRunsVersion();
@@ -71,6 +73,31 @@ export function Sidebar({
       (s) => (s.title ?? "").toLowerCase().includes(q) || (s.preview ?? "").toLowerCase().includes(q),
     );
   }, [sessions, query]);
+
+  // Dashboard mode also searches what was said, on the server (FTS over every message).
+  const [hits, setHits] = useState<SessionSearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  useEffect(() => {
+    const q = query.trim();
+    setHits(null);
+    if (!dashboard || q.length < 2) return setSearching(false);
+    let alive = true;
+    setSearching(true);
+    const timer = setTimeout(() => {
+      const names = profileFilter === "all" ? profiles.map((p) => p.name) : [profileFilter];
+      dashboard
+        .searchSessions(q, names)
+        .then((found) => alive && setHits(found))
+        .catch(() => alive && setHits([]))
+        .finally(() => alive && setSearching(false));
+    }, 300);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [dashboard, query, profileFilter, profiles]);
+  const listed = new Set(filtered.map((s) => `${s.profile ?? ""}/${s.id}`));
+  const contentHits = (hits ?? []).filter((h) => !h.archived && !listed.has(`${h.profile}/${h.session_id}`));
 
   const pinned = filtered.filter((s) => s.pinned);
   // Across profiles, say whose session each row is.
@@ -204,7 +231,24 @@ export function Sidebar({
             onClick={() => open(s.id, s.profile)}
           />
         ))}
-        {!sessionsLoading && !sessionsError && filtered.length === 0 && (
+        {(searching || contentHits.length > 0) && <Group label="En las conversaciones" />}
+        {contentHits.map((h) => (
+          <SessionRow
+            key={`hit-${h.profile}/${h.session_id}`}
+            title={h.title || h.preview || h.session_id}
+            meta={[relativeTime(h.last_active ?? h.session_started ?? undefined), showProfile ? h.profile : ""].filter(Boolean).join(" · ")}
+            detail={h.snippet ? <Snippet text={h.snippet} /> : undefined}
+            active={view === "chat" && h.session_id === activeSessionId}
+            running={running.has(h.session_id)}
+            onClick={() => open(h.session_id, h.profile)}
+          />
+        ))}
+        {searching && contentHits.length === 0 && (
+          <div className="flex justify-center py-3 text-text-tertiary">
+            <Spinner />
+          </div>
+        )}
+        {!sessionsLoading && !sessionsError && filtered.length === 0 && contentHits.length === 0 && !searching && (
           <p className="px-5 py-6 text-sm text-text-tertiary">
             {query ? "Sin resultados." : "Todavía no hay sesiones."}
           </p>
@@ -310,15 +354,36 @@ function Group({ label }: { label: string }) {
   return <SectionLabel className="block px-5 pt-3 pb-1">{label}</SectionLabel>;
 }
 
+/** An FTS excerpt with its `>>>match<<<` marks shown highlighted. */
+function Snippet({ text }: { text: string }) {
+  const parts = text.replace(/\s+/g, " ").split(/>>>|<<</);
+  return (
+    <>
+      {parts.map((part, i) =>
+        i % 2 ? (
+          <mark key={i} className="bg-midground/20 text-midground">
+            {part}
+          </mark>
+        ) : (
+          part
+        ),
+      )}
+    </>
+  );
+}
+
 function SessionRow({
   title,
   meta,
+  detail,
   active,
   running,
   onClick,
 }: {
   title: string;
   meta: string;
+  /** A second line under the title (a search excerpt). */
+  detail?: ReactNode;
   active: boolean;
   running: boolean;
   onClick: () => void;
@@ -334,6 +399,7 @@ function SessionRow({
     >
       <span className="min-w-0 flex-1">
         <span className="block truncate text-sm">{title}</span>
+        {detail && <span className="line-clamp-2 text-xs text-text-secondary">{detail}</span>}
         {meta && <span className="block truncate text-xs text-text-tertiary">{meta}</span>}
       </span>
       {running && <Spinner className="shrink-0 text-midground" aria-label="En curso" />}

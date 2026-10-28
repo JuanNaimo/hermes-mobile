@@ -211,3 +211,25 @@ test("restarting the gateway waits for the action and for the gateway to report 
   assert.ok(Date.now() - started >= 40, "polled until the action finished");
   await assert.rejects(client.restartGatewayAndWait("default", { everyMs: 20, timeoutMs: 30 }), /no volvió a tiempo/);
 });
+
+test("searches message content on the server, in each profile asked for", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  // Another test edits the seeded sessions: take one that still has messages.
+  let target: { id: string; profile: string } | undefined;
+  let word = "";
+  for (const row of await client.sessions()) {
+    const first = (await client.messages(row.id, row.profile)).find((m) => typeof m.content === "string");
+    word = String(first?.content ?? "").split(/\s+/).find((w) => w.length > 4) ?? "";
+    if (word) {
+      target = row;
+      break;
+    }
+  }
+  assert.ok(target, "a session with messages");
+  const hits = await client.searchSessions(word, ["default", "tech-insider"]);
+  const hit = hits.find((h) => h.session_id === target.id);
+  assert.ok(hit, `"${word}" found`);
+  assert.equal(hit.profile, target.profile);
+  assert.match(hit.snippet ?? "", />>>.+<<</);
+  assert.deepEqual(await client.searchSessions("zzzz-nada", ["default"]), []);
+});

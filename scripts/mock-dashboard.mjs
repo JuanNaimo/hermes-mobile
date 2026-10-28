@@ -470,6 +470,28 @@ export function startMockDashboard({
         if (!knownProfile(profile)) return detail(res, 404, `Profile '${profile}' does not exist.`);
         return json(res, 200, toolsetsFor(profile));
       }
+      if (path === "/api/sessions/search") {
+        // Ids first, then message content, one hit per session; FTS snippets mark the match >>>…<<<.
+        const term = (q.get("q") ?? "").trim();
+        if (!term) return json(res, 200, { results: [] });
+        const profile = q.get("profile") || "default";
+        const needle = term.toLowerCase();
+        const results = [];
+        for (const row of sessions.filter((r) => r.profile === profile)) {
+          const base = { session_id: row.id, id: row.id, profile, title: row.title, preview: row.preview, last_active: row.last_active, archived: Boolean(row.archived), source: row.source };
+          if (row.id.toLowerCase().startsWith(needle)) {
+            results.push({ ...base, snippet: "", role: null });
+            continue;
+          }
+          const hit = (messages.get(`${profile}/${row.id}`) ?? []).find((m) => typeof m.content === "string" && m.content.toLowerCase().includes(needle));
+          if (hit) {
+            const at = hit.content.toLowerCase().indexOf(needle);
+            const snippet = `${at > 30 ? "..." : ""}${hit.content.slice(Math.max(0, at - 30), at)}>>>${hit.content.slice(at, at + term.length)}<<<${hit.content.slice(at + term.length, at + term.length + 40)}...`;
+            results.push({ ...base, snippet, role: hit.role, session_started: row.started_at });
+          }
+        }
+        return json(res, 200, { results: results.slice(0, Number(q.get("limit") ?? 20)) });
+      }
       if (path === "/api/profiles/sessions") {
         const profile = q.get("profile") || "all";
         if (profile !== "all" && !profiles.some((p) => p.name === profile)) return detail(res, 404, `Profile not found: ${profile}`);

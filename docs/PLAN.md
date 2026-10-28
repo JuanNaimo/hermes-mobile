@@ -11,7 +11,7 @@ Estado al 27/10/2026. Pensado para seguir en una sesión en la nube (Claude Code
   - `apps/desktop/src/app/*`: la referencia de paridad con Desktop.
 - **Probar sin servidor real**:
   - `node scripts/mock-dashboard.mjs` levanta el mock en `:9119` (usuario `hermes` / clave `hermes`), y `pnpm dev` levanta la app.
-  - `pnpm typecheck` y `pnpm test` corren los tests de node contra el mock (hoy pasan 49).
+  - `pnpm typecheck` y `pnpm test` corren los tests de node contra el mock (hoy pasan 50).
   - El mock solo implementa el **modo legacy**. Todo lo nuevo tiene que entrar al mock y a `tests/` en el mismo cambio.
 - **En la nube no se puede**:
   - Compilar el APK: necesita JDK 21 y el SDK de Android, y `android/` está en `.gitignore`.
@@ -68,7 +68,8 @@ En orden de prioridad sugerido. Para cada uno: leer la carpeta de Desktop y el e
 5. ✅ **Línea de estado** (27/10): `status.update` o, si no hay, lo que se deduce del turno (herramienta en curso,
    pensando, escribiendo, esperando tu respuesta). También en modo API key.
 6. **`/btw` y `/background`**: preguntas al costado y tareas en segundo plano sin cortar el turno.
-7. **Búsqueda en el servidor**: hoy el buscador de sesiones filtra solo lo cargado. Buscar el endpoint de búsqueda en `web_routers/sessions*.py`.
+7. ✅ **Búsqueda en el servidor** (28/10): en modo dashboard el buscador también consulta `/api/sessions/search`
+   (uno por perfil) y muestra las coincidencias dentro de las conversaciones con el fragmento resaltado.
 8. **Modelo por defecto global** del perfil (no solo por sesión). Desktop: `model-picker-overlay.tsx`, `settings/`.
 9. **Webhooks**: lista, alta y baja, con el secreto visible una sola vez. API en `hermes_cli/web_routers/ops.py` (`_webhook_route_summary`); Desktop: `app/webhooks`. Encaja como pestaña en Bots.
 10. Menor prioridad: reacciones, artifacts (`app/artifacts`), import de sesiones (`app/session-import`), ajustes de config (`app/settings`).
