@@ -265,3 +265,22 @@ test("webhooks: enable the platform, create (secret once), pause and delete", as
   assert.deepEqual((await client.webhooks("tech-insider")).subscriptions, []);
   await assert.rejects(client.deleteWebhook("tech-insider", "github-prs"), /No subscription/);
 });
+
+test("config: partial updates deep-merge into the profile's config.yaml", async () => {
+  const { patchFor, withPath, getPath, personalityOptions } = await import("../src/lib/hermesSettings.ts");
+  assert.deepEqual(patchFor("display.personality", "noir"), { display: { personality: "noir" } });
+  assert.deepEqual(withPath({ display: { a: 1 } }, "display.b", 2), { display: { a: 1, b: 2 } });
+  assert.equal(getPath({ a: { b: [1] } }, "a.b.0"), 1);
+
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  const before = await client.config("default");
+  assert.equal(getPath(before, "approvals.mode"), "manual");
+  assert.ok(personalityOptions(before).includes("asistente-nas"), "custom personalities listed");
+  await client.updateConfig("default", patchFor("display.personality", "noir"));
+  await client.updateConfig("default", patchFor("command_allowlist", ["git status"]));
+  const after = await client.config("default");
+  assert.equal(getPath(after, "display.personality"), "noir");
+  assert.equal(getPath(after, "display.show_reasoning"), true, "siblings kept");
+  assert.deepEqual(after.command_allowlist, ["git status"]);
+  assert.equal(getPath(await client.config("tech-insider"), "display.personality"), "", "per profile");
+});

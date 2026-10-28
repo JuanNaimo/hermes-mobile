@@ -11,6 +11,7 @@ import {
 import { HermesClient, type Message, type Session } from "@/lib/api";
 import { DashboardClient, DashboardError, type DashboardProfile, type DashboardTokens } from "@/lib/dashboard";
 import { DashboardChat } from "@/lib/dashboardChat";
+import { forgetServerConfigs } from "@/lib/serverConfig";
 import type { GatewayStatus } from "@/lib/gateway";
 import { connectionKey, isDashboard, type AnyConnection } from "@/lib/connection";
 import { loadJSON, saveJSON } from "@/lib/utils";
@@ -175,6 +176,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [dashboard],
   );
   useEffect(() => () => chat?.close(), [chat]);
+  // Another login (or server): its config.yaml isn't the one cached.
+  useEffect(() => () => forgetServerConfigs(), [dashboard]);
   // Back from the background, the OS may have killed the socket without telling us:
   // check now so a turn in progress reconnects instead of waiting for the next ping.
   useEffect(() => {

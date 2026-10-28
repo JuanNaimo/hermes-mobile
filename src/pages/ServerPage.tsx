@@ -8,6 +8,7 @@ import { useApp, useClient } from "@/store";
 import { THEMES, type TextSize } from "@/themes/presets";
 import { cn } from "@/lib/utils";
 import { IconButton, PageShell, PageTitle, Panel, SectionLabel, StatusDot } from "@/components/ui";
+import { HermesSettingsPanel } from "@/components/HermesSettingsPanel";
 
 interface Readiness {
   status?: string;
@@ -129,7 +130,7 @@ function ApiServerPage({ leading }: { leading?: ReactNode }) {
 }
 
 function DashboardServerPage({ leading }: { leading?: ReactNode }) {
-  const { connection, dashboard, disconnect, profiles } = useApp();
+  const { connection, dashboard, disconnect, profiles, profileFilter, notify } = useApp();
   const [me, setMe] = useState<{ user_id: string; display_name?: string; provider: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -188,6 +189,15 @@ function DashboardServerPage({ leading }: { leading?: ReactNode }) {
             Punto verde: el gateway de ese perfil está corriendo.
           </p>
         </Panel>
+
+        {dashboard && profiles.length > 0 && (
+          <HermesSettingsPanel
+            dashboard={dashboard}
+            profiles={profiles.map((p) => p.name)}
+            defaultProfile={profileFilter !== "all" ? profileFilter : (profiles.find((p) => p.is_default)?.name ?? profiles[0].name)}
+            onError={(m) => notify(m, "error")}
+          />
+        )}
 
         <AppearancePanel />
       </div>

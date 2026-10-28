@@ -165,6 +165,14 @@ export function startMockDashboard({
 
   /** Bots: per-profile platform switches and credentials, one shared pairing store. */
   const botState = new Map();
+  /** config.yaml per profile (created from the defaults on first read). */
+  const CONFIG_DEFAULTS = {
+    model: "anthropic/claude-sonnet", model_context_length: 0, timezone: "",
+    display: { personality: "", show_reasoning: true, busy_input_mode: "interrupt" },
+    approvals: { mode: "manual" }, command_allowlist: [], checkpoints: { enabled: false, max_snapshots: 20 },
+    memory: { memory_enabled: true, user_profile_enabled: true }, personalities: { "asistente-nas": "Sos el admin del NAS." },
+  };
+  const profileConfigs = {};
   /** profile → { enabled, routes: Map<name, route> } */
   const webhooks = {};
   /** The last `/api/gateway/restart`: { polls, profile }. */
@@ -586,6 +594,25 @@ export function startMockDashboard({
         if (bots.wa.polls >= 3) Object.assign(bots.wa, { status: "connected", account_name: "Juan", account_phone: "5491122334455" });
         else if (bots.wa.polls >= 1) Object.assign(bots.wa, { status: "waiting", qr_payload: "2@mock-whatsapp-qr,abc,def" });
         return json(res, 200, bots.wa);
+      }
+      // -- config.yaml per profile: defaults filled in on read, deep merge on write.
+      if (path === "/api/config") {
+        const profile = q.get("profile") || "default";
+        if (!knownProfile(profile)) return detail(res, 404, `Profile '${profile}' does not exist.`);
+        const cfg = (profileConfigs[profile] ??= structuredClone(CONFIG_DEFAULTS));
+        if (req.method === "GET") return json(res, 200, cfg);
+        if (req.method === "PUT") {
+          const b = await body(req);
+          if (!b.config || typeof b.config !== "object") return detail(res, 422, "config required");
+          const merge = (dst, src) => {
+            for (const [k, v] of Object.entries(src)) {
+              if (v && typeof v === "object" && !Array.isArray(v) && dst[k] && typeof dst[k] === "object" && !Array.isArray(dst[k])) merge(dst[k], v);
+              else dst[k] = v;
+            }
+          };
+          merge(cfg, b.config);
+          return json(res, 200, { ok: true });
+        }
       }
       // -- webhooks (web_routers/ops.py): per-profile routes; secrets only on create.
       const wm = path.match(/^\/api\/webhooks(?:\/(enable)|\/([^/]+)(\/enabled)?)?$/);

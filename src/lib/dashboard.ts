@@ -520,6 +520,18 @@ export class DashboardClient {
   }
 
   /** Restart the profile's gateway so platform changes take effect. */
+  // -- config.yaml (web_routers/config_env.py) ------------------------------------
+
+  /** The profile's config with defaults filled in (`/api/config`, internal `_` keys stripped). */
+  config(profile: string): Promise<Record<string, unknown>> {
+    return this.request(`/api/config?${new URLSearchParams({ profile })}`);
+  }
+
+  /** Deep-merged into config.yaml on the server: send only what changed. */
+  updateConfig(profile: string, patch: Record<string, unknown>) {
+    return this.request(`/api/config?${new URLSearchParams({ profile })}`, { method: "PUT", json: { config: patch, profile } });
+  }
+
   // -- webhooks (web_routers/ops.py): the adapter hot-reloads the routes --------------
 
   webhooks(profile: string): Promise<{ enabled: boolean; base_url: string; subscriptions: Webhook[] }> {
