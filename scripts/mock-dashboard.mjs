@@ -165,6 +165,8 @@ export function startMockDashboard({
 
   /** Bots: per-profile platform switches and credentials, one shared pairing store. */
   const botState = new Map();
+  /** profile → { enabled, routes: Map<name, route> } */
+  const webhooks = {};
   /** The last `/api/gateway/restart`: { polls, profile }. */
   let restart = null;
   const bots = {
@@ -584,6 +586,45 @@ export function startMockDashboard({
         if (bots.wa.polls >= 3) Object.assign(bots.wa, { status: "connected", account_name: "Juan", account_phone: "5491122334455" });
         else if (bots.wa.polls >= 1) Object.assign(bots.wa, { status: "waiting", qr_payload: "2@mock-whatsapp-qr,abc,def" });
         return json(res, 200, bots.wa);
+      }
+      // -- webhooks (web_routers/ops.py): per-profile routes; secrets only on create.
+      const wm = path.match(/^\/api\/webhooks(?:\/(enable)|\/([^/]+)(\/enabled)?)?$/);
+      if (wm) {
+        const profile = q.get("profile") || "default";
+        if (!knownProfile(profile)) return detail(res, 404, `Profile '${profile}' does not exist.`);
+        const store = (webhooks[profile] ??= { enabled: profile === "default", routes: new Map() });
+        const baseUrl = `http://${req.headers.host ?? "127.0.0.1"}`.replace(/:\d+$/, ":8644");
+        const summary = (name, r) => ({ name, description: r.description, events: r.events, deliver: r.deliver, deliver_only: false, prompt: r.prompt, script: "", skills: [], created_at: r.created_at, url: `${baseUrl}/webhooks/${name}`, secret_set: true, enabled: r.enabled !== false });
+        const [, enable, rawName, enabledPath] = wm;
+        if (enable && req.method === "POST") {
+          store.enabled = true;
+          return json(res, 200, { ok: true, platform: "webhook", enabled: true, needs_restart: false, restart_started: true });
+        }
+        if (!rawName && req.method === "GET") {
+          return json(res, 200, { enabled: store.enabled, base_url: baseUrl, subscriptions: [...store.routes].map(([n, r]) => summary(n, r)) });
+        }
+        if (!rawName && req.method === "POST") {
+          if (!store.enabled) return detail(res, 400, "Webhook platform is not enabled. Enable it from the Webhooks page first.");
+          const b = await body(req);
+          const name = String(b.name ?? "").trim().toLowerCase().replace(/ /g, "-");
+          if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) return detail(res, 400, "Invalid name. Use lowercase alphanumeric with hyphens/underscores.");
+          if (store.routes.has(name)) return detail(res, 409, `Subscription '${name}' changed since it was read.`);
+          const secret = b.secret || token();
+          const route = { description: b.description || `Dashboard-created subscription: ${name}`, events: (b.events ?? []).filter(Boolean), prompt: b.prompt || "", deliver: b.deliver || "log", secret, created_at: new Date().toISOString() };
+          store.routes.set(name, route);
+          return json(res, 200, { ...summary(name, route), secret });
+        }
+        const name = decodeURIComponent(rawName ?? "").toLowerCase();
+        if (!store.routes.has(name)) return detail(res, 404, `No subscription named '${name}'`);
+        if (enabledPath && req.method === "PUT") {
+          const b = await body(req);
+          store.routes.get(name).enabled = Boolean(b.enabled);
+          return json(res, 200, { ok: true, name, enabled: Boolean(b.enabled) });
+        }
+        if (!enabledPath && req.method === "DELETE") {
+          store.routes.delete(name);
+          return json(res, 200, { ok: true });
+        }
       }
       if (path === "/api/model/set" && req.method === "POST") {
         const b = await body(req);

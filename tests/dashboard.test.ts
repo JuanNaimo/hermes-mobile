@@ -245,3 +245,23 @@ test("sets a profile's default model, asking first for an expensive one", async 
   assert.equal((await client.profiles()).find((p) => p.name === "tech-insider")?.model, "anthropic/claude-opus");
   await client.setDefaultModel("tech-insider", "openai/gpt-5", "openrouter");
 });
+
+test("webhooks: enable the platform, create (secret once), pause and delete", async () => {
+  const client = new DashboardClient(base(mock), await dashboardLogin({ baseUrl: base(mock), username: "hermes", password: "hermes" }));
+  assert.equal((await client.webhooks("tech-insider")).enabled, false);
+  await assert.rejects(client.createWebhook("tech-insider", { name: "x" }), /not enabled/);
+  await client.enableWebhooks("tech-insider");
+  const created = await client.createWebhook("tech-insider", { name: "GitHub PRs", events: ["pull_request"], prompt: "Resumí {payload}" });
+  assert.equal(created.name, "github-prs");
+  assert.ok(created.secret.length > 20);
+  assert.match(created.url, /\/webhooks\/github-prs$/);
+  const listed = (await client.webhooks("tech-insider")).subscriptions;
+  assert.deepEqual(listed.map((w) => [w.name, w.enabled, w.secret_set]), [["github-prs", true, true]]);
+  assert.ok(!("secret" in listed[0]), "never shown again");
+  await client.setWebhookEnabled("tech-insider", "github-prs", false);
+  assert.equal((await client.webhooks("tech-insider")).subscriptions[0].enabled, false);
+  await assert.rejects(client.createWebhook("tech-insider", { name: "-mal" }), /Invalid name/);
+  await client.deleteWebhook("tech-insider", "github-prs");
+  assert.deepEqual((await client.webhooks("tech-insider")).subscriptions, []);
+  await assert.rejects(client.deleteWebhook("tech-insider", "github-prs"), /No subscription/);
+});

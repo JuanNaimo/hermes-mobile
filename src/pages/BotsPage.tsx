@@ -18,6 +18,7 @@ import {
 import { cn } from "@/lib/utils";
 import { EmptyState, IconButton, PageShell, PageTitle, Panel, SectionLabel } from "@/components/ui";
 import { ProfileChips } from "@/components/ProfileChips";
+import { WebhooksPanel } from "@/components/WebhooksPanel";
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
@@ -187,6 +188,8 @@ export function BotsPage({ leading }: { leading?: ReactNode }) {
       )}
 
       {platforms && <PairingSection dashboard={dash} profile={profile} platforms={platforms} />}
+
+      <WebhooksPanel dashboard={dash} profile={profile} onError={(m) => notify(m, "error")} onNotice={(m) => notify(m)} />
 
       <TelegramSetupSheet
         open={setup === "telegram"}

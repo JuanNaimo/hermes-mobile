@@ -11,7 +11,7 @@ Estado al 27/10/2026. Pensado para seguir en una sesión en la nube (Claude Code
   - `apps/desktop/src/app/*`: la referencia de paridad con Desktop.
 - **Probar sin servidor real**:
   - `node scripts/mock-dashboard.mjs` levanta el mock en `:9119` (usuario `hermes` / clave `hermes`), y `pnpm dev` levanta la app.
-  - `pnpm typecheck` y `pnpm test` corren los tests de node contra el mock (hoy pasan 52).
+  - `pnpm typecheck` y `pnpm test` corren los tests de node contra el mock (hoy pasan 53).
   - El mock solo implementa el **modo legacy**. Todo lo nuevo tiene que entrar al mock y a `tests/` en el mismo cambio.
 - **En la nube no se puede**:
   - Compilar el APK: necesita JDK 21 y el SDK de Android, y `android/` está en `.gitignore`.
@@ -74,7 +74,8 @@ En orden de prioridad sugerido. Para cada uno: leer la carpeta de Desktop y el e
    (uno por perfil) y muestra las coincidencias dentro de las conversaciones con el fragmento resaltado.
 8. ✅ **Modelo por defecto del perfil** (28/10): en el selector de modelo, "También como predeterminado de <perfil>"
    lo guarda con `POST /api/model/set {scope: "main"}` (con la confirmación de modelos caros).
-9. **Webhooks**: lista, alta y baja, con el secreto visible una sola vez. API en `hermes_cli/web_routers/ops.py` (`_webhook_route_summary`); Desktop: `app/webhooks`. Encaja como pestaña en Bots.
+9. ✅ **Webhooks** (28/10): sección en Bots: activar la plataforma, crear (el secreto se muestra una sola vez, con
+   copiar), pausar y borrar, por perfil (`/api/webhooks*`).
 10. Menor prioridad: reacciones, artifacts (`app/artifacts`), import de sesiones (`app/session-import`), ajustes de config (`app/settings`).
 
 ## 3. Deuda conocida

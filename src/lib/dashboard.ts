@@ -255,6 +255,29 @@ export async function refreshTokens(baseUrl: string, tokens: DashboardTokens): P
 /** Refresh this long before the access token expires. */
 const REFRESH_MARGIN_S = 120;
 
+/** A webhook route (`hermes_cli/web_routers/ops.py::_webhook_route_summary`). */
+export interface Webhook {
+  name: string;
+  description: string;
+  events: string[];
+  deliver: string;
+  deliver_only: boolean;
+  prompt: string;
+  skills: string[];
+  created_at?: string | null;
+  url: string;
+  secret_set: boolean;
+  enabled: boolean;
+}
+
+export interface WebhookDraft {
+  name: string;
+  description?: string;
+  events?: string[];
+  prompt?: string;
+  deliver?: string;
+}
+
 /** `GET /api/sessions/search` result (hermes_cli/web_routers/sessions.py, subset). */
 export interface SessionSearchHit {
   session_id: string;
@@ -497,6 +520,35 @@ export class DashboardClient {
   }
 
   /** Restart the profile's gateway so platform changes take effect. */
+  // -- webhooks (web_routers/ops.py): the adapter hot-reloads the routes --------------
+
+  webhooks(profile: string): Promise<{ enabled: boolean; base_url: string; subscriptions: Webhook[] }> {
+    return this.request(`/api/webhooks?${new URLSearchParams({ profile })}`);
+  }
+
+  /** Turns the webhook platform on; the dashboard restarts the gateway for it. */
+  enableWebhooks(profile: string): Promise<{ needs_restart?: boolean; restart_started?: boolean }> {
+    return this.request(`/api/webhooks/enable?${new URLSearchParams({ profile })}`, { method: "POST" });
+  }
+
+  /** The reply carries the route's HMAC `secret`: the only time the server shows it. */
+  createWebhook(profile: string, draft: WebhookDraft): Promise<Webhook & { secret: string }> {
+    return this.request(`/api/webhooks?${new URLSearchParams({ profile })}`, { method: "POST", json: draft });
+  }
+
+  setWebhookEnabled(profile: string, name: string, enabled: boolean) {
+    return this.request(`/api/webhooks/${encodeURIComponent(name)}/enabled?${new URLSearchParams({ profile })}`, {
+      method: "PUT",
+      json: { enabled },
+    });
+  }
+
+  deleteWebhook(profile: string, name: string) {
+    return this.request(`/api/webhooks/${encodeURIComponent(name)}?${new URLSearchParams({ profile })}`, {
+      method: "DELETE",
+    });
+  }
+
   restartGateway(profile: string) {
     return this.request(`/api/gateway/restart?${new URLSearchParams({ profile })}`, { method: "POST" });
   }
