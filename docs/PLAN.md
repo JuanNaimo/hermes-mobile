@@ -11,7 +11,7 @@ Estado al 27/10/2026. Pensado para seguir en una sesión en la nube (Claude Code
   - `apps/desktop/src/app/*`: la referencia de paridad con Desktop.
 - **Probar sin servidor real**:
   - `node scripts/mock-dashboard.mjs` levanta el mock en `:9119` (usuario `hermes` / clave `hermes`), y `pnpm dev` levanta la app.
-  - `pnpm typecheck` y `pnpm test` corren los tests de node contra el mock (hoy pasan 53).
+  - `pnpm typecheck` y `pnpm test` corren los tests de node contra el mock (hoy pasan 55).
   - El mock solo implementa el **modo legacy**. Todo lo nuevo tiene que entrar al mock y a `tests/` en el mismo cambio.
 - **En la nube no se puede**:
   - Compilar el APK: necesita JDK 21 y el SDK de Android, y `android/` está en `.gitignore`.
@@ -45,6 +45,9 @@ Nada de esto se probó todavía fuera del mock.
 - [ ] **Cola y Corregir**: que el agente del servidor acepte `session.steer` (si contesta 4010 la app lo manda a la cola)
   y que la corrección llegue en el próximo paso.
 - [ ] **Archivos**: un PDF real por `file.attach` (límite de la app: 20 MB) y que el agente lo lea con la ref `@file:`.
+- [ ] **Subagentes, `/btw`, `/background`, webhooks, búsqueda y modelo por defecto** contra el servidor real: forma
+  real de los eventos `subagent.*`, `btw.complete`/`background.complete`, `/api/webhooks*`, `/api/sessions/search` y
+  `/api/model/set`.
 - [ ] **Línea de estado**: qué textos manda `status.update` en la práctica (la app oculta `"ready"`).
 - [ ] **Reinicio del gateway** en Bots: que `/api/actions/gateway-restart/status` y `/api/status?profile=` alcancen para
   saber cuándo volvió.
@@ -64,7 +67,9 @@ En orden de prioridad sugerido. Para cada uno: leer la carpeta de Desktop y el e
    No se usa `busy_input_mode` del servidor: la app nunca manda `prompt.submit` con el turno ocupado.
 3. ✅ **Adjuntar archivos y PDF** (27/10). `file.attach {name, data_url}` (no `ManagedFileUpload`, que es el gestor de
    archivos del dashboard) y las refs `@file:` al principio del prompt, como Desktop. Se muestran como chips.
-4. **Subagentes (sección Agents)**: árbol de subagentes por sesión. Desktop: `apps/desktop/src/app/agents` (`buildSubagentTree`, `$subagentsBySession`).
+4. ✅ **Subagentes** (28/10): los eventos `subagent.*` arman un árbol por sesión (`src/lib/subagents.ts`, como
+   `buildSubagentTree` de Desktop), plegado arriba del compositor con estado, herramienta actual y resumen. Los
+   terminados se descartan al empezar el próximo turno. No abre la sesión del hijo (`child_session_id`) todavía.
 5. ✅ **Línea de estado** (27/10): `status.update` o, si no hay, lo que se deduce del turno (herramienta en curso,
    pensando, escribiendo, esperando tu respuesta). También en modo API key.
 6. ✅ **`/btw` y `/background`** (28/10): `prompt.btw` / `prompt.background` (también `/bg`), con o sin turno en

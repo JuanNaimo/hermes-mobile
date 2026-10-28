@@ -4,7 +4,19 @@ import { gatewayEventToStream, serverRequestToStream } from "./gatewayEvents.ts"
 import { splitFileRefs } from "./transcript.ts";
 import { normalizeModelOptions, type ModelOptions } from "./models.ts";
 import { beginRun, endRun, getRun, resetRunOutput, runEvent, takeQueued, type FileAttachment, type RunControls } from "./runs.ts";
-import { addSideTask, adoptFences, finishSideTask, forgetFences, getLive, mergeInfo, setStatus, setTodos, setUsage } from "./sessionLive.ts";
+import {
+  addSideTask,
+  adoptFences,
+  finishSideTask,
+  forgetFences,
+  getLive,
+  mergeInfo,
+  pruneSubagents,
+  setStatus,
+  setTodos,
+  setUsage,
+  subagentEvent,
+} from "./sessionLive.ts";
 import type { SocketFactory } from "./socket.ts";
 
 /** Model and effort for a chat that doesn't exist yet: they ride on `session.create`. */
@@ -153,6 +165,15 @@ export class DashboardChat {
         break;
       case "message.start":
         setStatus(sid, null);
+        pruneSubagents(sid);
+        break;
+      case "subagent.spawn_requested":
+      case "subagent.start":
+      case "subagent.progress":
+      case "subagent.thinking":
+      case "subagent.tool":
+      case "subagent.complete":
+        subagentEvent(sid, event.type, p);
         break;
       case "btw.complete":
       case "background.complete":

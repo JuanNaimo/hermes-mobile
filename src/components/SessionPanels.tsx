@@ -8,6 +8,7 @@ import {
   Circle,
   CircleDot,
   Download,
+  GitFork,
   GitBranch,
   ListPlus,
   Send,
@@ -20,6 +21,7 @@ import {
   XCircle,
 } from "lucide-react";
 import type { Queued } from "@/lib/runs";
+import { buildSubagentTree, isActive, type Subagent, type SubagentNode } from "@/lib/subagents";
 import type { Todo, Usage } from "@/lib/sessionLive";
 import { cn } from "@/lib/utils";
 
@@ -203,6 +205,83 @@ export function TodoStrip({ todos }: { todos: Todo[] }) {
         </ul>
       )}
     </div>
+  );
+}
+
+// -- subagents --------------------------------------------------------------------------
+
+const SUBAGENT_ICON = { completed: CheckCircle2, failed: XCircle, interrupted: XCircle, queued: Circle } as const;
+
+/** The children this session delegated to, folded to a count; opens into their tree. */
+export function SubagentStrip({ subagents }: { subagents: Subagent[] }) {
+  const [open, setOpen] = useState(false);
+  if (subagents.length === 0) return null;
+  const active = subagents.filter(isActive).length;
+  const failed = subagents.filter((s) => s.status === "failed").length;
+  const current = subagents.find((s) => s.status === "running") ?? subagents.find(isActive);
+  return (
+    <div className="mb-2 border border-current/15 bg-card/60 backdrop-blur rounded-[var(--radius-md)]">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex min-h-10 w-full items-center gap-2 px-3 text-start text-xs text-text-secondary"
+      >
+        <GitFork className="size-4 shrink-0 text-midground" />
+        <span className="shrink-0 text-midground">
+          {active ? `${active} subagente${active === 1 ? "" : "s"} trabajando` : `${subagents.length} subagente${subagents.length === 1 ? "" : "s"}`}
+        </span>
+        {failed > 0 && <span className="shrink-0 text-destructive">· {failed} con error</span>}
+        <span className="min-w-0 flex-1 truncate">{current ? `· ${current.goal}` : ""}</span>
+        <ChevronDown className={cn("size-4 shrink-0 transition-transform", open && "rotate-180")} />
+      </button>
+      {open && (
+        <ul className="flex max-h-72 flex-col gap-1 overflow-y-auto px-3 pb-3">
+          {buildSubagentTree(subagents).map((n) => (
+            <SubagentRow key={n.id} node={n} depth={0} />
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function SubagentRow({ node, depth }: { node: SubagentNode; depth: number }) {
+  const Icon = node.status === "running" ? null : SUBAGENT_ICON[node.status];
+  const detail = [node.currentTool, node.detail].filter(Boolean).join(" · ");
+  return (
+    <li style={{ paddingInlineStart: `${depth * 1.25}rem` }}>
+      <div className="flex items-start gap-2 py-1 text-sm">
+        <span className="mt-0.5 shrink-0">
+          {Icon ? (
+            <Icon
+              className={cn(
+                "size-4",
+                node.status === "completed" && "text-success",
+                (node.status === "failed" || node.status === "interrupted") && "text-destructive",
+                node.status === "queued" && "text-text-tertiary",
+              )}
+            />
+          ) : (
+            <Spinner />
+          )}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="line-clamp-2 text-midground">{node.goal || "Subagente"}</span>
+          {detail && <span className="block truncate text-xs text-text-tertiary">{detail}</span>}
+        </span>
+        {node.durationSeconds != null && (
+          <span className="shrink-0 font-mono text-xs text-text-tertiary">{Math.round(node.durationSeconds)} s</span>
+        )}
+      </div>
+      {node.children.length > 0 && (
+        <ul>
+          {node.children.map((c) => (
+            <SubagentRow key={c.id} node={c} depth={depth + 1} />
+          ))}
+        </ul>
+      )}
+    </li>
   );
 }
 

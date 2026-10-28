@@ -1115,6 +1115,32 @@ export function startMockDashboard({
       push({ role: "assistant", content: intro, tool_calls: [{ id: callId, type: "function", function: { name: "terminal", arguments: '{"command":"uptime"}' } }] });
       push({ role: "tool", tool_call_id: callId, tool_name: "terminal", content: "21:14 up 12 days, load average: 0.42" });
 
+      // delegate_task: two children in parallel, the first spawns one of its own.
+      if (/investig|deleg|subagente/i.test(text)) {
+        const callD = `call_${++requestN}`;
+        const batch = `dlg_${requestN}`;
+        event("tool.start", sid, { tool_id: callD, name: "delegate_task", args: { tasks: 2 } });
+        const kid = (id, goal, task_index, extra = {}) => ({ subagent_id: id, goal, task_index, task_count: 2, delegation_id: batch, depth: 0, model: "openai/gpt-5-mini", ...extra });
+        const a = kid("sa_1", "Buscar papers recientes sobre agentes", 0);
+        const b = kid("sa_2", "Revisar el uso de disco del NAS", 1);
+        const c = { ...kid("sa_3", "Leer el abstract del paper más citado", 0, { parent_id: "sa_1", depth: 1 }), task_count: 1, delegation_id: `${batch}_n` };
+        event("subagent.spawn_requested", sid, a);
+        event("subagent.spawn_requested", sid, b);
+        event("subagent.start", sid, a);
+        event("subagent.start", sid, b);
+        await sleep(150);
+        event("subagent.tool", sid, { ...a, tool_name: "web_search", tool_preview: "agents arxiv 2026" });
+        event("subagent.tool", sid, { ...b, tool_name: "terminal", tool_preview: "df -h /mnt/nas" });
+        event("subagent.start", sid, c);
+        await sleep(150);
+        event("subagent.thinking", sid, { ...c, text: "El abstract propone memoria jerárquica…" });
+        event("subagent.complete", sid, { ...c, status: "completed", summary: "Propone memoria jerárquica para agentes.", duration_seconds: 2.1 });
+        event("subagent.complete", sid, { ...a, status: "completed", summary: "3 papers relevantes.", duration_seconds: 4.8, tool_count: 3 });
+        event("subagent.complete", sid, { ...b, status: "timeout", summary: "El NAS no respondió a tiempo.", duration_seconds: 6 });
+        event("tool.complete", sid, { tool_id: callD, name: "delegate_task", summary: "2 tareas: 1 ok, 1 con error" });
+        if (s.interrupted) return interrupted(intro);
+      }
+
       // Asks the client and waits; `pending` lets an interrupt withdraw it.
       const askAndWait = async (method, params, requestId) => {
         const { id: rid, answer } = ask(method, sid, params);

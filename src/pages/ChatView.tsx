@@ -20,7 +20,7 @@ import {
 import { ApprovalCard, AssistantMessage, InputCard, Notice, SideTaskCard, ToolActivity, UserMessage } from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
 import { SessionControls } from "@/components/SessionControls";
-import { ContextMeter, QueueStrip, SessionMenu, StatusLine, TodoStrip, type SessionAction } from "@/components/SessionPanels";
+import { ContextMeter, QueueStrip, SessionMenu, StatusLine, SubagentStrip, TodoStrip, type SessionAction } from "@/components/SessionPanels";
 import { describeActivity } from "@/lib/activity";
 import { parseSideCommand, type NewSessionOptions } from "@/lib/dashboardChat";
 import { dismissSideTask } from "@/lib/sessionLive";
@@ -662,6 +662,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
             </p>
           )}
           {busy && run && <StatusLine text={describeActivity(run.stream.items, live.status)} />}
+          {dashboardMode && <SubagentStrip subagents={live.subagents} />}
           {dashboardMode && <TodoStrip todos={live.todos} />}
           {dashboardMode && activeSessionId && queue.length > 0 && (
             <QueueStrip

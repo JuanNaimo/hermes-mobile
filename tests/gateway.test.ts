@@ -489,6 +489,23 @@ test("DashboardChat: /btw and /background answer beside a running turn without t
   chat.close();
 });
 
+test("DashboardChat: delegated children show as a tree for the session; a new turn drops the finished ones", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getLive } = await import("../src/lib/sessionLive.ts");
+  const { buildSubagentTree } = await import("../src/lib/subagents.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const id = await chat.create("default", "Subagentes");
+  await new Promise<void>((resolve) => void chat.send(id, "default", "investigá agentes", [], resolve));
+  const list = getLive(id).subagents;
+  assert.deepEqual(list.map((s) => [s.id, s.status]), [["sa_1", "completed"], ["sa_2", "failed"], ["sa_3", "completed"]]);
+  const tree = buildSubagentTree(list);
+  assert.deepEqual(tree.map((n) => [n.id, n.children.map((c) => c.id)]), [["sa_1", ["sa_3"]], ["sa_2", []]]);
+  assert.equal(list[1].detail, "El NAS no respondió a tiempo.");
+  await new Promise<void>((resolve) => void chat.send(id, "default", "gracias", [], resolve));
+  assert.deepEqual(getLive(id).subagents, []);
+  chat.close();
+});
+
 test("DashboardChat: model, effort, fast and yolo per session, with live info and a confirm for expensive models", async () => {
   const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
   const { getLive } = await import("../src/lib/sessionLive.ts");

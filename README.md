@@ -65,6 +65,10 @@ Se elige en **Servidor → Apariencia**.
   cortarlo. Una línea arriba del compositor dice qué está haciendo. Si se corta la
   conexión a mitad de una respuesta, la app se reconecta y sigue desde donde quedó; abrir
   una sesión que está respondiendo (por ejemplo desde otro dispositivo) la muestra en vivo.
+  `/btw` hace una pregunta al costado y `/background` lanza una tarea aparte, sin cortar el
+  turno; los subagentes que delega Hermes se ven como árbol arriba del compositor. El
+  buscador del sidebar también busca dentro de las conversaciones, el selector de modelo
+  puede fijar el predeterminado del perfil, y en Bots se administran los webhooks.
 - **API key (API server, `:8642`)**: el modo original, completo, con una
   `API_SERVER_KEY` por perfil.
 
@@ -189,7 +193,9 @@ Hay un mock para cada modo:
   contraseña de sudo (`hermes`), "token"/"clave" pide un secreto y "vault" manda un
   pedido que la app rechaza. Además retoma un turno después de un corte
   (`session.events.since`), acepta correcciones (`session.steer`), guarda archivos
-  adjuntos (`file.attach`) y simula el reinicio del gateway. También aplica el chequeo de `Host`, de `Origin` y el CORS solo-localhost
+  adjuntos (`file.attach`), responde `/btw` y `/background`, delega en subagentes si le
+  pedís que "investigue", busca en el contenido, maneja webhooks y simula el reinicio del
+  gateway. También aplica el chequeo de `Host`, de `Origin` y el CORS solo-localhost
   del server real.
 
 ```bash
@@ -218,7 +224,8 @@ src/
 │   ├── sse.ts          # parser SSE incremental (el stream es un POST, sin EventSource)
 │   ├── transcript.ts   # historial + eventos SSE → items del chat (reducer puro)
 │   ├── activity.ts     # la línea "qué está haciendo" de un turno en curso
-│   ├── sessionLive.ts  # modelo, uso, todos y estado de cada sesión abierta
+│   ├── sessionLive.ts  # modelo, uso, todos, estado, subagentes y /btw de cada sesión
+│   ├── subagents.ts    # eventos subagent.* → árbol de subagentes
 │   └── runs.ts         # turnos en curso y la cola de mensajes, fuera de React
 ├── components/         # sidebar, composer, mensajes, markdown, primitivas táctiles
 │   └── ProfileChips.tsx# filtro de perfiles (sidebar, jobs, skills)

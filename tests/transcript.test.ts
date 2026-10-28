@@ -103,3 +103,22 @@ test("the status line says what the running turn is doing", async () => {
   assert.equal(describeActivity([user, tool, card]), "Esperando tu respuesta");
   assert.equal(describeActivity([user, tool], { kind: "compacting", text: "Resumiendo el contexto…" }), "Resumiendo el contexto…");
 });
+
+test("subagent events build a tree; late frames don't revive a finished child", async () => {
+  const { applySubagentEvent, buildSubagentTree } = await import("../src/lib/subagents.ts");
+  let list = applySubagentEvent([], "subagent.spawn_requested", { subagent_id: "a", goal: "padre", task_index: 0, task_count: 2 }, 1);
+  list = applySubagentEvent(list, "subagent.start", { subagent_id: "a", goal: "padre" }, 2);
+  list = applySubagentEvent(list, "subagent.start", { subagent_id: "b", parent_id: "a", goal: "hijo" }, 3);
+  list = applySubagentEvent(list, "subagent.tool", { subagent_id: "b", tool_name: "web_search", tool_preview: "agentes" }, 4);
+  assert.deepEqual([list[1].status, list[1].currentTool, list[1].detail], ["running", "web_search", "agentes"]);
+  list = applySubagentEvent(list, "subagent.complete", { subagent_id: "b", status: "timeout", summary: "no llegó" }, 5);
+  assert.equal(list[1].status, "failed");
+  assert.equal(list[1].currentTool, undefined);
+  list = applySubagentEvent(list, "subagent.progress", { subagent_id: "b", text: "tarde" }, 6);
+  assert.equal(list[1].detail, "no llegó");
+  // No ids (older emitters): batch + position.
+  list = applySubagentEvent(list, "subagent.start", { goal: "viejo", delegation_id: "d", task_index: 1 }, 7);
+  assert.equal(list[2].id, "d#1");
+  const tree = buildSubagentTree(list);
+  assert.deepEqual(tree.map((n) => [n.id, n.children.map((c) => c.id)]), [["a", ["b"]], ["d#1", []]]);
+});

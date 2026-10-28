@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { applySubagentEvent, isActive, type Subagent } from "./subagents.ts";
 
 /**
  * What the gateway says about each session while it is attached (dashboard
@@ -70,6 +71,8 @@ export interface SideTask {
 export interface LiveSession {
   info: LiveInfo;
   sideTasks: SideTask[];
+  /** Children delegated by this session's turns (`subagent.*`). */
+  subagents: Subagent[];
   status?: LiveStatus | null;
   usage: Usage | null;
   todos: Todo[];
@@ -79,7 +82,7 @@ export interface LiveSession {
   generation?: number;
 }
 
-const EMPTY: LiveSession = { info: {}, usage: null, todos: [], todoRevision: -1, sideTasks: [] };
+const EMPTY: LiveSession = { info: {}, usage: null, todos: [], todoRevision: -1, sideTasks: [], subagents: [] };
 
 const sessions = new Map<string, LiveSession>();
 const listeners = new Set<() => void>();
@@ -125,6 +128,17 @@ export function setStatus(storedId: string, status: LiveStatus | null) {
   const cur = getLive(storedId).status;
   if (cur?.kind === status?.kind && cur?.text === status?.text) return;
   update(storedId, (s) => ({ ...s, status }));
+}
+
+export function subagentEvent(storedId: string, type: string, payload: Record<string, unknown>) {
+  update(storedId, (s) => ({ ...s, subagents: applySubagentEvent(s.subagents, type, payload) }));
+}
+
+/** A new turn starts: children of earlier turns that already ended drop off. */
+export function pruneSubagents(storedId: string) {
+  const cur = getLive(storedId).subagents;
+  const kept = cur.filter(isActive);
+  if (kept.length !== cur.length) update(storedId, (s) => ({ ...s, subagents: kept }));
 }
 
 export function addSideTask(storedId: string, task: SideTask) {
