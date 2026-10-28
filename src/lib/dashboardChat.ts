@@ -4,7 +4,7 @@ import { gatewayEventToStream, serverRequestToStream } from "./gatewayEvents.ts"
 import { splitFileRefs } from "./transcript.ts";
 import { normalizeModelOptions, type ModelOptions } from "./models.ts";
 import { beginRun, endRun, getRun, resetRunOutput, runEvent, takeQueued, type FileAttachment, type RunControls } from "./runs.ts";
-import { adoptFences, forgetFences, getLive, mergeInfo, setStatus, setTodos, setUsage } from "./sessionLive.ts";
+import { addSideTask, adoptFences, finishSideTask, forgetFences, getLive, mergeInfo, setStatus, setTodos, setUsage } from "./sessionLive.ts";
 import type { SocketFactory } from "./socket.ts";
 
 /** Model and effort for a chat that doesn't exist yet: they ride on `session.create`. */
@@ -153,6 +153,10 @@ export class DashboardChat {
         break;
       case "message.start":
         setStatus(sid, null);
+        break;
+      case "btw.complete":
+      case "background.complete":
+        finishSideTask(sid, p.task_id, p.text);
         break;
       case "status.update": {
         // `_status_update(sid, "ready")` arrives as {kind: "status", text: "ready"}: the phase ended.
@@ -453,6 +457,18 @@ export class DashboardChat {
   }
 
   /**
+   * `/btw` (a question over a snapshot of the conversation) or `/background`
+   * (a separate agent): both run beside the session without touching its turn
+   * or history, and answer with a `*.complete` event.
+   */
+  async side(storedId: string, profile: string, kind: "btw" | "background", text: string) {
+    const rid = await this.attach(storedId, profile);
+    const res = await this.gateway.request<{ task_id?: string }>(`prompt.${kind}`, { session_id: rid, profile, text });
+    if (!res?.task_id) throw new Error("El servidor no aceptó la tarea");
+    addSideTask(storedId, { taskId: res.task_id, kind, question: text });
+  }
+
+  /**
    * Run the last user turn again: drop it (and its reply) from the session,
    * then send `text` (the same words, or edited ones) in its place.
    */
@@ -649,6 +665,13 @@ export class DashboardChat {
     this.stored.clear();
     this.attaching.clear();
   }
+}
+
+/** `/btw …`, `/background …` or `/bg …`: a side task instead of a message. */
+export function parseSideCommand(text: string): { kind: "btw" | "background"; text: string } | null {
+  const m = /^\/(btw|background|bg)(?:\s+([\s\S]*))?$/i.exec(text.trim());
+  if (!m) return null;
+  return { kind: m[1].toLowerCase() === "btw" ? "btw" : "background", text: (m[2] ?? "").trim() };
 }
 
 /** `apps/shared/src/slash.ts` directive types → what the app does. */

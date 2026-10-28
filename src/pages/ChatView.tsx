@@ -17,12 +17,13 @@ import {
   useRunsVersion,
   type FileAttachment,
 } from "@/lib/runs";
-import { ApprovalCard, AssistantMessage, InputCard, Notice, ToolActivity, UserMessage } from "@/components/ChatItems";
+import { ApprovalCard, AssistantMessage, InputCard, Notice, SideTaskCard, ToolActivity, UserMessage } from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
 import { SessionControls } from "@/components/SessionControls";
 import { ContextMeter, QueueStrip, SessionMenu, StatusLine, TodoStrip, type SessionAction } from "@/components/SessionPanels";
 import { describeActivity } from "@/lib/activity";
-import type { NewSessionOptions } from "@/lib/dashboardChat";
+import { parseSideCommand, type NewSessionOptions } from "@/lib/dashboardChat";
+import { dismissSideTask } from "@/lib/sessionLive";
 import { useLive } from "@/lib/sessionLive";
 import { EmptyState, IconButton, SectionLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -137,6 +138,8 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   const [pinned, setPinned] = useState(true);
   const items = [...history, ...(run?.stream.items ?? []), ...slashNotes];
   const lastLen = items.length;
+  // Side-task cards sit under the transcript: follow them as they appear and get answered.
+  const sideKey = live.sideTasks.map((t) => `${t.taskId}:${t.answer != null}`).join(",");
   const lastText = (() => {
     const last = items[items.length - 1];
     return last && last.kind === "assistant" ? last.text.length + last.reasoning.length : 0;
@@ -145,7 +148,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && pinned) el.scrollTop = el.scrollHeight;
-  }, [lastLen, lastText, pinned, loading]);
+  }, [lastLen, lastText, pinned, loading, sideKey]);
 
   function onScroll() {
     const el = scrollRef.current;
@@ -217,7 +220,18 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
     });
   }
 
+  /** `/btw` and `/background` run beside the conversation, busy or not. */
+  function trySide(dc: NonNullable<typeof chat>, text: string): boolean {
+    const side = parseSideCommand(text);
+    if (!side) return false;
+    if (!side.text) notify(`Escribí qué hacer después de /${side.kind === "btw" ? "btw" : "background"}.`, "error");
+    else if (!activeSessionId || !sessionProfile) notify("Abrí una conversación primero.", "error");
+    else void dc.side(activeSessionId, sessionProfile, side.kind, side.text).catch((err) => notify(err instanceof Error ? err.message : String(err), "error"));
+    return true;
+  }
+
   async function sendDashboard(dc: NonNullable<typeof chat>, text: string, images: string[], files: FileAttachment[] = []) {
+    if (images.length === 0 && files.length === 0 && trySide(dc, text)) return;
     if (editing) return retryLast(text);
     let id = activeSessionId;
     let profile = sessionProfile;
@@ -619,6 +633,11 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
                   return <Notice key={item.key} item={item} />;
               }
             })}
+            {dashboardMode &&
+              activeSessionId &&
+              live.sideTasks.map((t) => (
+                <SideTaskCard key={t.taskId} task={t} onDismiss={() => dismissSideTask(activeSessionId, t.taskId)} />
+              ))}
           </div>
         </div>
 
@@ -690,7 +709,13 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
             enterSends={settings.enterSends}
             onSend={(t, imgs, files) => void send(t, imgs, files)}
             allowFiles={dashboardMode}
-            onQueue={dashboardMode && activeSessionId ? (t, imgs, files) => enqueue(activeSessionId, t, imgs, files) : undefined}
+            onQueue={
+              dashboardMode && activeSessionId && chat
+                ? (t, imgs, files) => {
+                    if (imgs.length || files.length || !trySide(chat, t)) enqueue(activeSessionId, t, imgs, files);
+                  }
+                : undefined
+            }
             onSteer={dashboardMode && activeSessionId ? (t) => void steer(t) : undefined}
             onTranscribe={dashboardMode ? transcribe : undefined}
             onError={(message) => notify(message, "error")}

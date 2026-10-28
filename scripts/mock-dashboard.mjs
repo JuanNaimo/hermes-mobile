@@ -870,6 +870,28 @@ export function startMockDashboard({
           void runTurn(params.session_id, s, text);
           return;
         }
+        case "prompt.btw":
+        case "prompt.background": {
+          const text = String(params.text ?? "");
+          if (!text) return fail(4012, "text required");
+          const s = live.get(params.session_id);
+          if (!s) return fail(4004, "session not live");
+          const kind = method === "prompt.btw" ? "btw" : "bg";
+          const taskId = `${kind}_${(++requestN).toString(16).padStart(6, "0")}`;
+          reply({ task_id: taskId });
+          // Answers beside the running turn, whatever it is doing.
+          setTimeout(() => {
+            const answer = /falla/i.test(text)
+              ? "error: el modelo auxiliar no respondió (mock)"
+              : kind === "btw"
+                ? `Al costado: sobre "${text}", el servidor lleva 12 días encendido.`
+                : `Terminé en segundo plano: ${text}.`;
+            emit(kind === "btw" ? "btw.complete" : "background.complete", params.session_id, {
+              task_id: taskId, text: answer, ...(kind === "btw" ? { question: text } : {}),
+            });
+          }, kind === "btw" ? 300 : 700);
+          return;
+        }
         case "session.steer": {
           const text = String(params.text ?? "").trim();
           if (!text) return fail(4002, "text is required");

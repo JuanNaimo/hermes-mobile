@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Info,
   KeyRound,
+  Layers,
   MessageCircleQuestion,
   ShieldAlert,
   Square,
@@ -23,6 +24,7 @@ import type { ChatItem, ClarifyQuestion } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import { stopSpeaking, useSpeech } from "@/lib/voice";
 import { Markdown } from "./Markdown";
+import type { SideTask } from "@/lib/sessionLive";
 
 type Item<K extends ChatItem["kind"]> = Extract<ChatItem, { kind: K }>;
 
@@ -330,6 +332,43 @@ export function Notice({ item }: { item: Item<"notice"> }) {
       {error ? <AlertTriangle className="mt-0.5 size-4 shrink-0" /> : <Info className="mt-0.5 size-4 shrink-0" />}
       <span className="min-w-0 break-words whitespace-pre-wrap">{item.text}</span>
     </div>
+  );
+}
+
+/** A `/btw` answer or `/background` result, beside the conversation (not part of it). */
+export function SideTaskCard({ task, onDismiss }: { task: SideTask; onDismiss: () => void }) {
+  const label = task.kind === "btw" ? "Pregunta al costado" : "Tarea en segundo plano";
+  return (
+    <section
+      aria-label={label}
+      className="border border-dashed border-current/25 bg-card/40 px-4 py-3 rounded-[var(--radius-md)] animate-rise"
+    >
+      <header className="flex items-center gap-2">
+        {task.kind === "btw" ? <MessageCircleQuestion className="size-4 text-midground" /> : <Layers className="size-4 text-midground" />}
+        <span className="text-display text-xs font-bold tracking-[0.12em] text-midground uppercase">{label}</span>
+        <span className="flex-1" />
+        <button
+          type="button"
+          aria-label="Descartar"
+          onClick={onDismiss}
+          className="inline-flex size-9 items-center justify-center text-text-tertiary hover:text-midground"
+        >
+          <X className="size-4" />
+        </button>
+      </header>
+      <p className="mt-1 text-sm text-text-secondary">{task.question}</p>
+      <div className="mt-2">
+        {task.answer == null ? (
+          <span className="flex items-center gap-2 text-sm text-text-tertiary">
+            <Spinner /> {task.kind === "btw" ? "Pensando la respuesta…" : "Trabajando aparte…"}
+          </span>
+        ) : task.failed ? (
+          <p className="text-sm text-destructive">No se pudo: {task.answer}</p>
+        ) : (
+          <Markdown text={task.answer || "(sin respuesta)"} />
+        )}
+      </div>
+    </section>
   );
 }
 

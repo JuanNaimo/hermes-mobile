@@ -57,8 +57,19 @@ export interface LiveStatus {
   text: string;
 }
 
+/** A `/btw` question or `/background` task: runs beside the conversation, answered by an event. */
+export interface SideTask {
+  taskId: string;
+  kind: "btw" | "background";
+  question: string;
+  /** Set once `btw.complete` / `background.complete` arrives. */
+  answer?: string;
+  failed?: boolean;
+}
+
 export interface LiveSession {
   info: LiveInfo;
+  sideTasks: SideTask[];
   status?: LiveStatus | null;
   usage: Usage | null;
   todos: Todo[];
@@ -68,7 +79,7 @@ export interface LiveSession {
   generation?: number;
 }
 
-const EMPTY: LiveSession = { info: {}, usage: null, todos: [], todoRevision: -1 };
+const EMPTY: LiveSession = { info: {}, usage: null, todos: [], todoRevision: -1, sideTasks: [] };
 
 const sessions = new Map<string, LiveSession>();
 const listeners = new Set<() => void>();
@@ -114,6 +125,26 @@ export function setStatus(storedId: string, status: LiveStatus | null) {
   const cur = getLive(storedId).status;
   if (cur?.kind === status?.kind && cur?.text === status?.text) return;
   update(storedId, (s) => ({ ...s, status }));
+}
+
+export function addSideTask(storedId: string, task: SideTask) {
+  update(storedId, (s) => ({ ...s, sideTasks: [...s.sideTasks, task] }));
+}
+
+/** The side agent's text; the gateway reports a failure as `error: <message>`. */
+export function finishSideTask(storedId: string, taskId: unknown, text: unknown) {
+  const answer = typeof text === "string" ? text : "";
+  const failed = /^error: /.test(answer);
+  update(storedId, (s) => ({
+    ...s,
+    sideTasks: s.sideTasks.map((t) =>
+      t.taskId === taskId ? { ...t, answer: failed ? answer.slice(7) : answer, failed } : t,
+    ),
+  }));
+}
+
+export function dismissSideTask(storedId: string, taskId: string) {
+  update(storedId, (s) => ({ ...s, sideTasks: s.sideTasks.filter((t) => t.taskId !== taskId) }));
 }
 
 export function setUsage(storedId: string, usage: unknown) {

@@ -457,6 +457,38 @@ test("DashboardChat: files ride file.attach and the prompt points at them; a ret
   chat.close();
 });
 
+test("DashboardChat: /btw and /background answer beside a running turn without touching it", async () => {
+  const { DashboardChat, parseSideCommand } = await import("../src/lib/dashboardChat.ts");
+  const { getRun } = await import("../src/lib/runs.ts");
+  const { getLive } = await import("../src/lib/sessionLive.ts");
+  assert.deepEqual(parseSideCommand("/btw ¿cuánta RAM hay?"), { kind: "btw", text: "¿cuánta RAM hay?" });
+  assert.deepEqual(parseSideCommand("/bg compilá el proyecto"), { kind: "background", text: "compilá el proyecto" });
+  assert.deepEqual(parseSideCommand("/background"), { kind: "background", text: "" });
+  assert.equal(parseSideCommand("/btwx hola"), null);
+  assert.equal(parseSideCommand("hola /btw"), null);
+
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const id = await chat.create("default", "Al costado");
+  let ended = 0;
+  chat.onRunEnded(() => ended++);
+  void chat.send(id, "default", "hacé el deploy");
+  await until(() => getRun(id)?.stream.items.some((i) => i.kind === "input") ?? false, "turn parked on a question");
+  await chat.side(id, "default", "btw", "¿cuánto lleva encendido?");
+  await chat.side(id, "default", "background", "limpiá los logs");
+  await chat.side(id, "default", "btw", "esto falla");
+  await until(() => getLive(id).sideTasks.every((t) => t.answer != null), "all answered");
+  const [btw, bg, failed] = getLive(id).sideTasks;
+  assert.match(btw.answer!, /Al costado: sobre "¿cuánto lleva encendido\?"/);
+  assert.equal(bg.kind, "background");
+  assert.match(bg.answer!, /limpiá los logs/);
+  assert.ok(failed.failed && /no respondió/.test(failed.answer!));
+  assert.ok(getRun(id)!.busy && ended === 0, "the turn is still waiting on its question");
+  assert.ok(!getRun(id)!.stream.items.some((i) => i.kind === "user" && /cuánto lleva/.test(i.text)), "not a message");
+  await chat.gateway.request("session.interrupt", { session_id: await chat.attach(id, "default"), profile: "default" });
+  await until(() => ended === 1);
+  chat.close();
+});
+
 test("DashboardChat: model, effort, fast and yolo per session, with live info and a confirm for expensive models", async () => {
   const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
   const { getLive } = await import("../src/lib/sessionLive.ts");
