@@ -122,3 +122,16 @@ test("subagent events build a tree; late frames don't revive a finished child", 
   const tree = buildSubagentTree(list);
   assert.deepEqual(tree.map((n) => [n.id, n.children.map((c) => c.id)]), [["a", ["b"]], ["d#1", []]]);
 });
+
+test("stored reactions come out of display_metadata, as JSON or an object", async () => {
+  const { reactionsOf, historyToItems } = await import("../src/lib/transcript.ts");
+  assert.deepEqual(reactionsOf('{"reactions":[{"emoji":"👍","author":"agent","at":1}]}'), [{ emoji: "👍", author: "agent", at: 1 }]);
+  assert.deepEqual(reactionsOf({ reactions: [{ emoji: "❤️", author: "user" }, { nope: 1 }] }), [{ emoji: "❤️", author: "user" }]);
+  assert.deepEqual(reactionsOf("no json"), []);
+  const [u, a] = historyToItems([
+    { id: 3, role: "user", content: "hola", display_metadata: '{"reactions":[{"emoji":"❤️","author":"user"}]}' },
+    { id: 4, role: "assistant", content: "buenas" },
+  ]);
+  assert.ok(u.kind === "user" && u.rowId === 3 && u.reactions?.[0].emoji === "❤️");
+  assert.ok(a.kind === "assistant" && a.rowId === 4 && a.reactions === undefined);
+});

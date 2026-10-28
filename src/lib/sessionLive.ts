@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { applySubagentEvent, isActive, type Subagent } from "./subagents.ts";
+import type { Reaction } from "./transcript.ts";
 
 /**
  * What the gateway says about each session while it is attached (dashboard
@@ -73,6 +74,8 @@ export interface LiveSession {
   sideTasks: SideTask[];
   /** Children delegated by this session's turns (`subagent.*`). */
   subagents: Subagent[];
+  /** Reactions changed since the history loaded (ours, or the agent's live ones), by row id. */
+  reactions: Record<number, Reaction[]>;
   status?: LiveStatus | null;
   usage: Usage | null;
   todos: Todo[];
@@ -82,7 +85,7 @@ export interface LiveSession {
   generation?: number;
 }
 
-const EMPTY: LiveSession = { info: {}, usage: null, todos: [], todoRevision: -1, sideTasks: [], subagents: [] };
+const EMPTY: LiveSession = { info: {}, usage: null, todos: [], todoRevision: -1, sideTasks: [], subagents: [], reactions: {} };
 
 const sessions = new Map<string, LiveSession>();
 const listeners = new Set<() => void>();
@@ -139,6 +142,11 @@ export function pruneSubagents(storedId: string) {
   const cur = getLive(storedId).subagents;
   const kept = cur.filter(isActive);
   if (kept.length !== cur.length) update(storedId, (s) => ({ ...s, subagents: kept }));
+}
+
+export function setReactions(storedId: string, rowId: unknown, reactions: unknown) {
+  if (typeof rowId !== "number" || !Array.isArray(reactions)) return;
+  update(storedId, (s) => ({ ...s, reactions: { ...s.reactions, [rowId]: reactions as Reaction[] } }));
 }
 
 export function addSideTask(storedId: string, task: SideTask) {

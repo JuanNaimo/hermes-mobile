@@ -67,6 +67,8 @@ export interface Message {
   reasoning_content?: string | null;
   finish_reason?: string | null;
   display_kind?: string | null;
+  /** Dashboard: JSON (or an object) with per-row display data, e.g. `reactions`. */
+  display_metadata?: string | Record<string, unknown> | null;
 }
 
 export interface Capabilities {

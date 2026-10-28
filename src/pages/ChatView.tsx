@@ -3,7 +3,9 @@ import { Spinner } from "@/components/ds";
 import { ArrowDown, Ellipsis, GitBranch, Pencil, RefreshCw, Sparkles, Trash2, WifiOff, X } from "lucide-react";
 import { useApp } from "@/store";
 import { ApiError } from "@/lib/api";
-import { historyToItems, type ChatItem } from "@/lib/transcript";
+import { historyToItems, type ChatItem, type Reaction } from "@/lib/transcript";
+
+const NO_REACTIONS: Reaction[] = [];
 import {
   answerApproval,
   answerInput,
@@ -17,13 +19,24 @@ import {
   useRunsVersion,
   type FileAttachment,
 } from "@/lib/runs";
-import { ApprovalCard, AssistantMessage, InputCard, Notice, SideTaskCard, ToolActivity, UserMessage } from "@/components/ChatItems";
+import {
+  ApprovalCard,
+  AssistantMessage,
+  InputCard,
+  Notice,
+  SideTaskCard,
+  ToolActivity,
+  UserMessage,
+  type ReactionProps,
+} from "@/components/ChatItems";
 import { Composer } from "@/components/Composer";
 import { SessionControls } from "@/components/SessionControls";
 import { ContextMeter, QueueStrip, SessionMenu, StatusLine, SubagentStrip, TodoStrip, type SessionAction } from "@/components/SessionPanels";
 import { describeActivity } from "@/lib/activity";
 import { parseSideCommand, type NewSessionOptions } from "@/lib/dashboardChat";
-import { dismissSideTask } from "@/lib/sessionLive";
+import { dismissSideTask, setReactions } from "@/lib/sessionLive";
+import { useServerConfig } from "@/lib/serverConfig";
+import { getPath } from "@/lib/hermesSettings";
 import { useLive } from "@/lib/sessionLive";
 import { EmptyState, IconButton, SectionLabel } from "@/components/ui";
 import { cn } from "@/lib/utils";
@@ -68,6 +81,36 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
   const run = getRun(activeSessionId);
   const busy = Boolean(run?.busy);
   const live = useLive(activeSessionId);
+  // Reactions follow the profile's `display.message_reactions`, like Desktop's toggle.
+  const serverConfig = useServerConfig(dashboardMode ? dashboard : null, sessionProfile);
+  const reactionsOn = dashboardMode && getPath(serverConfig, "display.message_reactions") === true;
+  const reactionCache = useRef(new Map<number, ReactionProps>());
+  useEffect(() => reactionCache.current.clear(), [activeSessionId, reactionsOn]);
+
+  /** Stable per row, so memoized messages only re-render when their reactions change. */
+  function reactionFor(item: { rowId?: number; reactions?: Reaction[] }): ReactionProps | undefined {
+    const rowId = item.rowId;
+    if (!reactionsOn || rowId == null || !chat || !activeSessionId || !sessionProfile) return undefined;
+    const list = live.reactions[rowId] ?? item.reactions ?? NO_REACTIONS;
+    const cached = reactionCache.current.get(rowId);
+    if (cached?.reactions === list) return cached;
+    const sessionId = activeSessionId;
+    const profile = sessionProfile;
+    const props: ReactionProps = {
+      reactions: list,
+      onReact: (emoji) => {
+        // Paint first, persist behind it; put it back if the server refuses.
+        const others = list.filter((r) => r.author !== "user");
+        setReactions(sessionId, rowId, emoji ? [...others, { emoji, author: "user" }] : others);
+        chat.react(sessionId, profile, rowId, emoji).catch((err) => {
+          setReactions(sessionId, rowId, list);
+          notify(`No se guardó la reacción: ${err instanceof Error ? err.message : String(err)}`, "error");
+        });
+      },
+    };
+    reactionCache.current.set(rowId, props);
+    return props;
+  }
   /** Model and effort picked for a chat that doesn't exist yet. */
   const [newChatOptions, setNewChatOptions] = useState<NewSessionOptions>({});
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | undefined>();
@@ -588,6 +631,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
                       key={item.key}
                       item={item}
                       onEdit={canRetry && i === lastUserIndex ? editLast : undefined}
+                      reaction={reactionFor(item)}
                     />
                   );
                 case "assistant":
@@ -598,6 +642,7 @@ export function ChatView({ leading }: { leading?: ReactNode }) {
                       showReasoning={settings.showReasoning}
                       onSpeak={dashboardMode ? speakReply : undefined}
                       onRetry={canRetry && i === lastAssistantIndex && i > lastUserIndex ? () => retryLast() : undefined}
+                      reaction={reactionFor(item)}
                     />
                   );
                 case "tool":

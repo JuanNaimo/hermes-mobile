@@ -173,6 +173,22 @@ export function startMockDashboard({
     memory: { memory_enabled: true, user_profile_enabled: true }, personalities: { "asistente-nas": "Sos el admin del NAS." },
   };
   const profileConfigs = {};
+  /** One reaction per author on a stored row (hermes_state_messages.set_message_reaction); null clears. */
+  function setReaction(row, emoji, author) {
+    let meta = {};
+    try {
+      meta = typeof row.display_metadata === "string" ? JSON.parse(row.display_metadata) : (row.display_metadata ?? {});
+    } catch {
+      meta = {};
+    }
+    const reactions = (meta.reactions ?? []).filter((r) => r.author !== author);
+    if (emoji) reactions.push({ emoji, author, at: now() });
+    if (reactions.length) meta.reactions = reactions;
+    else delete meta.reactions;
+    row.display_metadata = JSON.stringify(meta);
+    return reactions;
+  }
+
   /** profile → { enabled, routes: Map<name, route> } */
   const webhooks = {};
   /** The last `/api/gateway/restart`: { polls, profile }. */
@@ -949,6 +965,19 @@ export function startMockDashboard({
           void runTurn(params.session_id, s, text);
           return;
         }
+        case "message.react": {
+          const s = live.get(params.session_id);
+          if (!s) return fail(4004, "session not live");
+          const rows = messages.get(`${s.profile}/${s.stored}`) ?? [];
+          if (params.row_id == null && !["user", "assistant"].includes(params.newest_role)) return fail(4023, "row_id or newest_role required");
+          const emoji = params.emoji == null ? null : String(params.emoji).trim();
+          if (params.emoji != null && !emoji) return fail(4024, "emoji must be a non-empty string or null");
+          const author = params.author || "user";
+          if (!["user", "agent"].includes(author)) return fail(4025, "author must be 'user' or 'agent'");
+          const row = params.row_id != null ? rows.find((r) => r.id === Number(params.row_id)) : rows.findLast((r) => r.role === params.newest_role);
+          if (!row) return fail(4040, "message not found in this session");
+          return reply({ row_id: row.id, reactions: setReaction(row, emoji, author) });
+        }
         case "prompt.btw":
         case "prompt.background": {
           const text = String(params.text ?? "");
@@ -1249,6 +1278,11 @@ export function startMockDashboard({
 
       if (/falla/i.test(text)) {
         return finish({ text: "", status: "error", error: "El proveedor devolvió 503 (mock)" });
+      }
+      // react_to_message: the agent tapbacks the person's message, live.
+      if (/reaccion/i.test(text)) {
+        const userRow = rows.findLast((r) => r.role === "user");
+        if (userRow) event("message.reaction", sid, { row_id: userRow.id, role: "user", reactions: setReaction(userRow, "👍", "agent") });
       }
       const extra = notes.length ? `\n\n${notes.join("\n\n")}` : "";
       const said = text.replace(/^(@file:.*\n?)+/, "").trim();

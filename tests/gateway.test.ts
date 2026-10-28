@@ -506,6 +506,31 @@ test("DashboardChat: delegated children show as a tree for the session; a new tu
   chat.close();
 });
 
+test("DashboardChat: react to stored messages (one per author) and see the agent's reaction live", async () => {
+  const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
+  const { getLive } = await import("../src/lib/sessionLive.ts");
+  const { historyToItems } = await import("../src/lib/transcript.ts");
+  const chat = new DashboardChat(dash, { socketFactory: webSocket });
+  const id = await chat.create("default", "Reacciones");
+  await new Promise<void>((resolve) => void chat.send(id, "default", "reaccioná a esto", [], resolve));
+  const items = historyToItems(await dash.messages(id, "default"));
+  const user = items.find((i) => i.kind === "user")!;
+  const reply = items.findLast((i) => i.kind === "assistant")!;
+  assert.ok(user.kind === "user" && user.rowId != null);
+  assert.deepEqual(getLive(id).reactions[user.rowId!].map((r) => [r.emoji, r.author]), [["👍", "agent"]], "live from message.reaction");
+  assert.ok(reply.kind === "assistant" && reply.rowId != null);
+  assert.deepEqual((await chat.react(id, "default", reply.rowId!, "❤️")).length, 1);
+  await chat.react(id, "default", reply.rowId!, "😂");
+  assert.deepEqual(getLive(id).reactions[reply.rowId!].map((r) => r.emoji), ["😂"], "one per author");
+  await chat.react(id, "default", reply.rowId!, null);
+  const after = historyToItems(await dash.messages(id, "default"));
+  const storedReply = after.find((i) => i.kind === "assistant" && i.rowId === reply.rowId);
+  assert.ok(storedReply?.kind === "assistant" && storedReply.reactions === undefined, "cleared and stored");
+  const storedUser = after.find((i) => i.kind === "user");
+  assert.ok(storedUser?.kind === "user" && storedUser.reactions?.[0].author === "agent", "the agent's stays");
+  chat.close();
+});
+
 test("DashboardChat: model, effort, fast and yolo per session, with live info and a confirm for expensive models", async () => {
   const { DashboardChat } = await import("../src/lib/dashboardChat.ts");
   const { getLive } = await import("../src/lib/sessionLive.ts");

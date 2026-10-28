@@ -12,6 +12,7 @@ import {
   getLive,
   mergeInfo,
   pruneSubagents,
+  setReactions,
   setStatus,
   setTodos,
   setUsage,
@@ -174,6 +175,10 @@ export class DashboardChat {
       case "subagent.tool":
       case "subagent.complete":
         subagentEvent(sid, event.type, p);
+        break;
+      case "message.reaction":
+        // The agent reacted (react_to_message tool): paint it now.
+        setReactions(sid, p.row_id, p.reactions);
         break;
       case "btw.complete":
       case "background.complete":
@@ -455,6 +460,23 @@ export class DashboardChat {
       runEvent(storedId, "error", { message: err instanceof Error ? err.message : String(err) });
       this.finish(storedId);
     }
+  }
+
+  /**
+   * React to a stored message (`messages.id`): one emoji per author, the same
+   * emoji again (or null) takes it back. Returns the row's reactions now.
+   */
+  async react(storedId: string, profile: string, rowId: number, emoji: string | null) {
+    const rid = await this.attach(storedId, profile);
+    const res = await this.gateway.request<{ row_id: number; reactions: unknown[] }>("message.react", {
+      session_id: rid,
+      profile,
+      row_id: rowId,
+      emoji,
+      author: "user",
+    });
+    setReactions(storedId, res.row_id, res.reactions);
+    return res.reactions;
   }
 
   /**

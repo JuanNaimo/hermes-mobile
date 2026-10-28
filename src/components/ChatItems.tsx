@@ -15,12 +15,13 @@ import {
   Layers,
   MessageCircleQuestion,
   ShieldAlert,
+  SmilePlus,
   Square,
   Volume2,
   Wrench,
   X,
 } from "lucide-react";
-import type { ChatItem, ClarifyQuestion } from "@/lib/transcript";
+import type { ChatItem, ClarifyQuestion, Reaction } from "@/lib/transcript";
 import { cn } from "@/lib/utils";
 import { stopSpeaking, useSpeech } from "@/lib/voice";
 import { Markdown } from "./Markdown";
@@ -28,11 +29,84 @@ import type { SideTask } from "@/lib/sessionLive";
 
 type Item<K extends ChatItem["kind"]> = Extract<ChatItem, { kind: K }>;
 
+/** Hermes Desktop's quick tapbacks; double-click lands the first. */
+export const QUICK_REACTIONS = ["❤️", "👍", "👎", "😂", "‼️", "❓"];
+
+/** A stored message's reactions and the way to change ours (`emoji: null` takes it back). */
+export interface ReactionProps {
+  reactions: Reaction[];
+  onReact: (emoji: string | null) => void;
+}
+
+/** Tapback semantics: picking the emoji we already put takes it back. */
+function toggleOwn(r: ReactionProps, emoji: string) {
+  const mine = r.reactions.find((x) => x.author === "user")?.emoji;
+  r.onReact(mine === emoji ? null : emoji);
+}
+
+function ReactionBar({ reaction, align }: { reaction: ReactionProps; align: "start" | "end" }) {
+  const [picking, setPicking] = useState(false);
+  const mine = reaction.reactions.find((x) => x.author === "user")?.emoji;
+  return (
+    <div className={cn("flex flex-wrap items-center gap-1", align === "end" && "justify-end")}>
+      {reaction.reactions.map((r) => (
+        <button
+          key={`${r.author}-${r.emoji}`}
+          type="button"
+          disabled={r.author !== "user"}
+          onClick={() => reaction.onReact(null)}
+          aria-label={r.author === "user" ? `Quitar tu reacción ${r.emoji}` : `Hermes reaccionó ${r.emoji}`}
+          className={cn(
+            "inline-flex h-8 items-center gap-1 border px-2 text-sm rounded-full",
+            r.author === "user" ? "border-midground/40 bg-midground/10" : "border-current/20",
+          )}
+        >
+          {r.emoji}
+          {r.author === "agent" && <span className="text-[0.65rem] text-text-tertiary">Hermes</span>}
+        </button>
+      ))}
+      {picking ? (
+        <span role="group" aria-label="Elegí una reacción" className="flex items-center gap-0.5 border border-current/20 bg-background-base px-1 rounded-full">
+          {QUICK_REACTIONS.map((e) => (
+            <button
+              key={e}
+              type="button"
+              aria-pressed={mine === e}
+              onClick={() => {
+                toggleOwn(reaction, e);
+                setPicking(false);
+              }}
+              className={cn("inline-flex size-9 items-center justify-center text-base rounded-full hover:bg-midground/10", mine === e && "bg-midground/15")}
+            >
+              {e}
+            </button>
+          ))}
+          <button type="button" aria-label="Cerrar" onClick={() => setPicking(false)} className="inline-flex size-9 items-center justify-center text-text-tertiary">
+            <X className="size-3.5" />
+          </button>
+        </span>
+      ) : (
+        <button
+          type="button"
+          aria-label="Reaccionar"
+          onClick={() => setPicking(true)}
+          className="inline-flex size-9 items-center justify-center text-text-tertiary hover:text-midground rounded-full"
+        >
+          <SmilePlus className="size-4" />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export const UserMessage = memo(function UserMessage({
   item,
   onEdit,
+  reaction,
 }: {
   item: Item<"user">;
+  /** Present when reactions are on and the message is stored. */
+  reaction?: ReactionProps;
   /** The latest user message can be edited and run again. */
   onEdit?: () => void;
 }) {
@@ -78,10 +152,15 @@ export const UserMessage = memo(function UserMessage({
         )}
         {item.text && <p className="whitespace-pre-wrap break-words">{item.text}</p>}
       </div>
-      {onEdit && (
-        <ActionButton onClick={onEdit} icon={<Pencil className="size-3.5" />}>
-          Editar
-        </ActionButton>
+      {(onEdit || reaction) && (
+        <div className="flex flex-wrap items-center justify-end gap-1">
+          {reaction && <ReactionBar reaction={reaction} align="end" />}
+          {onEdit && (
+            <ActionButton onClick={onEdit} icon={<Pencil className="size-3.5" />}>
+              Editar
+            </ActionButton>
+          )}
+        </div>
       )}
     </div>
   );
@@ -92,8 +171,10 @@ export const AssistantMessage = memo(function AssistantMessage({
   showReasoning,
   onSpeak,
   onRetry,
+  reaction,
 }: {
   item: Item<"assistant">;
+  reaction?: ReactionProps;
   showReasoning: boolean;
   /** Read this reply out loud; without it there is no speaker button. */
   onSpeak?: (key: string, text: string) => void;
@@ -127,7 +208,13 @@ export const AssistantMessage = memo(function AssistantMessage({
           <Spinner /> <span>Pensando…</span>
         </div>
       ) : (
-        <div className={cn("text-text-primary", item.streaming && "stream-caret")}>
+        <div
+          className={cn("text-text-primary", item.streaming && "stream-caret")}
+          // Double-click a reply: the first tapback (❤️), like Desktop. Not on links or code.
+          onDoubleClick={(e) => {
+            if (reaction && e.detail === 2 && !(e.target as Element).closest("a, button, pre, code")) toggleOwn(reaction, QUICK_REACTIONS[0]);
+          }}
+        >
           <Markdown text={item.text} />
         </div>
       )}
@@ -143,6 +230,7 @@ export const AssistantMessage = memo(function AssistantMessage({
               Reintentar
             </ActionButton>
           )}
+          {reaction && <ReactionBar reaction={reaction} align="start" />}
         </div>
       )}
     </div>

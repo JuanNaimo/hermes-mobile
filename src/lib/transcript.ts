@@ -16,6 +16,9 @@ export type ChatItem =
       fileRefs?: string[];
       /** A correction sent into a running turn. */
       steer?: boolean;
+      /** Stored `messages.id` (history only): what reactions address. */
+      rowId?: number;
+      reactions?: Reaction[];
     }
   | {
       kind: "assistant";
@@ -23,6 +26,8 @@ export type ChatItem =
       text: string;
       reasoning: string;
       streaming: boolean;
+      rowId?: number;
+      reactions?: Reaction[];
     }
   | {
       kind: "tool";
@@ -94,6 +99,30 @@ function prettyArgs(raw: unknown): string {
   }
 }
 
+/** One emoji on a message; one per author, Tapback style (tui_gateway contracts MessageReaction). */
+export interface Reaction {
+  emoji: string;
+  author: "user" | "agent";
+  at?: number;
+}
+
+/** Reactions stored in a row's `display_metadata` (a JSON string or an object). */
+export function reactionsOf(meta: unknown): Reaction[] {
+  let obj = meta;
+  if (typeof obj === "string") {
+    try {
+      obj = JSON.parse(obj);
+    } catch {
+      return [];
+    }
+  }
+  const list = obj && typeof obj === "object" ? (obj as { reactions?: unknown }).reactions : undefined;
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((r): r is Record<string, unknown> => Boolean(r) && typeof r === "object" && typeof r.emoji === "string")
+    .map((r) => ({ emoji: String(r.emoji), author: r.author === "agent" ? "agent" : "user", ...(typeof r.at === "number" ? { at: r.at } : {}) }));
+}
+
 /** `@file:path` (optionally quoted) on its own line: how the gateway references an attached file. */
 const FILE_REF_LINE = /^@file:(?:`([^`]+)`|"([^"]+)"|'([^']+)'|(\S+))\s*$/;
 
@@ -120,17 +149,20 @@ export function historyToItems(messages: Message[]): ChatItem[] {
 
   for (const m of messages) {
     const key = `h-${m.id ?? nextKey("m")}`;
+    const rowId = typeof m.id === "number" ? m.id : undefined;
+    const reactions = reactionsOf(m.display_metadata);
+    const stored = { ...(rowId != null ? { rowId } : {}), ...(reactions.length ? { reactions } : {}) };
     if (m.role === "user") {
       const { text, files, refs } = splitFileRefs(contentText(m.content));
       const images = contentImages(m.content);
       if (text || images.length || files.length) {
-        items.push({ kind: "user", key, text, images, ...(files.length ? { files, fileRefs: refs } : {}) });
+        items.push({ kind: "user", key, text, images, ...(files.length ? { files, fileRefs: refs } : {}), ...stored });
       }
     } else if (m.role === "assistant") {
       const text = contentText(m.content);
       const reasoning = m.reasoning_content || m.reasoning || "";
       if (text || reasoning) {
-        items.push({ kind: "assistant", key, text, reasoning, streaming: false });
+        items.push({ kind: "assistant", key, text, reasoning, streaming: false, ...stored });
       }
       for (const [i, call] of (m.tool_calls ?? []).entries()) {
         const tool: Extract<ChatItem, { kind: "tool" }> = {
